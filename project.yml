@@ -1,0 +1,58 @@
+name: PRReview
+options:
+  bundleIdPrefix: com.prreview
+  deploymentTarget:
+    macOS: "13.0"
+  createIntermediateGroups: true
+packages:
+  PRReviewKit:
+    path: .
+targets:
+  PRReviewApp:
+    type: application
+    platform: macOS
+    sources:
+      - path: PRReviewApp
+    dependencies:
+      - package: PRReviewKit
+        product: PRReviewDesktop
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.prreview.app
+        PRODUCT_NAME: PR Review
+        INFOPLIST_FILE: PRReviewApp/Resources/Info.plist
+        SWIFT_VERSION: "5.9"
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        ENABLE_HARDENED_RUNTIME: YES
+        MACOSX_DEPLOYMENT_TARGET: "13.0"
+        COMBINE_HIDPI_IMAGES: YES
+  PRReviewAppUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - path: PRReviewAppUITests
+    dependencies:
+      - target: PRReviewApp
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.prreview.app.uitests
+        TEST_TARGET_NAME: PRReviewApp
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "5.9"
+        MACOSX_DEPLOYMENT_TARGET: "13.0"
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+schemes:
+  PRReviewApp:
+    build:
+      targets:
+        PRReviewApp: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - PRReviewAppUITests
+    archive:
+      config: Release

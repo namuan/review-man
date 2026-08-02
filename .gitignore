@@ -8,5 +8,8 @@ DerivedData/
 *.xcworkspace/xcuserdata/
 xcuserdata/
 
+# Build output
+build/
+
 # macOS
 .DS_Store

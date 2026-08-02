@@ -35,7 +35,7 @@ public enum AppLayout {
     /// Height in screen lines of a single diff row at the given content width.
     public static func rowHeight(_ row: Row, model: AppModel, width: Int) -> Int {
         switch row {
-        case .hunkHeader, .line, .outdatedHeader, .empty:
+        case .hunkHeader, .line, .outdatedHeader, .orphanedHeader, .empty:
             return 1
         case .thread(let id):
             guard let t = model.thread(byID: id) else { return 1 }
@@ -294,6 +294,9 @@ public enum AppView {
                 case .outdatedHeader:
                     s.fill(x, y, w, 1, Theme.outdatedBadge)
                     s.text(x + 1, y, " Outdated comments — Enter to \(model.outdatedExpanded ? "collapse" : "expand")", Theme.dim)
+                case .orphanedHeader:
+                    s.fill(x, y, w, 1, Theme.warn)
+                    s.text(x + 1, y, " Orphaned drafts — not submitted (anchors no longer in the diff; x to delete)", Theme.dim)
                 case .empty:
                     s.text(x + 1, y, "(no changes)", Theme.emptyHint)
                 }
@@ -441,7 +444,8 @@ public enum AppView {
         guard let d = model.draft(byID: id) else { return }
         let y0 = y
         s.text(x, y0, "▎", Theme.threadDraft)
-        s.text(x + 2, y0, "You · draft \(d.side == "LEFT" ? "(left)" : "")", Theme.draftBadge)
+        let badge = d.isOrphaned ? "You · orphaned draft · \(d.path):\(d.line)" : "You · draft \(d.side == "LEFT" ? "(left)" : "")"
+        s.text(x + 2, y0, badge, d.isOrphaned ? Theme.warn : Theme.draftBadge)
         var yy = y0 + 1
         let bodyLines = wrapText(d.body, width: max(10, width - 6))
         for bl in bodyLines {
@@ -598,9 +602,11 @@ public enum AppView {
         }
         yy += min(3, previewLines.count) + 1
 
-        s.text(x + 2, yy, "Drafts included (\(model.drafts.count)):", Theme.dim)
+        let submittable = model.drafts.filter { !$0.isOrphaned }
+        let orphans = model.drafts.count - submittable.count
+        s.text(x + 2, yy, "Drafts included (\(submittable.count))" + (orphans > 0 ? " · \(orphans) orphaned excluded" : "") + ":", Theme.dim)
         yy += 1
-        for d in model.drafts.prefix(6) {
+        for d in submittable.prefix(6) {
             let preview = d.body.split(separator: "\n").first.map(String.init) ?? ""
             s.text(x + 4, yy, truncateToWidth("· \(d.path):\(d.line)  \(preview)", bw - 6), Theme.warn)
             yy += 1

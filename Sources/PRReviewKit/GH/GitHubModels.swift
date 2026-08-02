@@ -5,6 +5,12 @@ public struct PREndpoint: Equatable, CustomStringConvertible {
     public var repo: String
     public var number: Int
 
+    public init(owner: String, repo: String, number: Int) {
+        self.owner = owner
+        self.repo = repo
+        self.number = number
+    }
+
     public var description: String { "\(owner)/\(repo)#\(number)" }
 }
 
@@ -105,10 +111,16 @@ public struct DraftComment: Equatable {
     public var createdAt: Date
     public var startLine: Int?
     public var startSide: String?
+    /// Derived in-memory state: true when the anchor no longer exists in the
+    /// fetched diff. Orphaned drafts are excluded from submission until their
+    /// anchor reappears (automatic reattachment) or they are deleted. This is
+    /// never persisted to the legacy JSON files.
+    public var isOrphaned: Bool
 
     public init(
         id: UUID = UUID(), path: String, line: Int, side: String, body: String,
-        createdAt: Date = Date(), startLine: Int? = nil, startSide: String? = nil
+        createdAt: Date = Date(), startLine: Int? = nil, startSide: String? = nil,
+        isOrphaned: Bool = false
     ) {
         self.id = id
         self.path = path
@@ -118,6 +130,7 @@ public struct DraftComment: Equatable {
         self.createdAt = createdAt
         self.startLine = startLine
         self.startSide = startSide
+        self.isOrphaned = isOrphaned
     }
 }
 

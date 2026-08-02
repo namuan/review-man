@@ -1,4 +1,4 @@
 import Foundation
 import PRReviewKit
 
-exit(PRReviewCLI.run(CommandLine.arguments))
+exit(await PRReviewCLI.run(CommandLine.arguments))

@@ -1,0 +1,117 @@
+import SwiftUI
+import PRReviewKit
+
+/// The diff pane for one file: fixed-width gutters, horizontal scrolling,
+/// LazyVStack rows with stable IDs, and programmatic scroll support.
+public struct DiffView: View {
+    @ObservedObject public var store: ReviewSessionStore
+    public let file: DiffFile
+
+    public init(store: ReviewSessionStore, file: DiffFile) {
+        self.store = store
+        self.file = file
+    }
+
+    public var body: some View {
+        if file.isBinary {
+            return AnyView(EmptyStateView(
+                icon: "doc.zipper",
+                title: "Binary file",
+                message: "\(file.path) cannot be displayed as a diff."
+            ).accessibilityIdentifier("binary-file-state"))
+        }
+        if file.tooLarge {
+            return AnyView(EmptyStateView(
+                icon: "exclamationmark.triangle",
+                title: "Diff too large",
+                message: "\(file.path) exceeded the fetch limit and its patch is unavailable."
+            ).accessibilityIdentifier("too-large-file-state"))
+        }
+        if file.hunks.isEmpty {
+            return AnyView(EmptyStateView(
+                icon: "doc",
+                title: "No changes in this file",
+                message: "\(file.path) has no textual changes to display."
+            ).accessibilityIdentifier("empty-file-state"))
+        }
+        return AnyView(diffScroll)
+    }
+
+    private var diffScroll: some View {
+        let rows = displayRows()
+        return ScrollViewReader { proxy in
+            ScrollView(.vertical) {
+                ScrollView(.horizontal) {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(rows) { displayRow in
+                            DiffRowView(store: store, file: file, displayRow: displayRow)
+                                .id(displayRow.id)
+                        }
+                    }
+                }
+            }
+            .onMoveCommand { direction in
+                handleMoveCommand(direction, proxy: proxy)
+            }
+        }
+        .accessibilityIdentifier("diff-pane")
+    }
+
+    /// Arrow-key navigation among commentable lines; Escape handled at the
+    /// window level. Scrolls the target row into view after moving.
+    private func handleMoveCommand(_ direction: MoveCommandDirection, proxy: ScrollViewProxy) {
+        switch direction {
+        case .up, .down:
+            store.moveLineSelection(direction == .down ? 1 : -1, in: file)
+            if let rowID = store.selection.rowID {
+                if AppearanceSettings.reduceMotion {
+                    proxy.scrollTo(rowID, anchor: .center)
+                } else {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        proxy.scrollTo(rowID, anchor: .center)
+                    }
+                }
+            }
+        default:
+            break
+        }
+    }
+
+    private func displayRows() -> [DiffDisplayRow] {
+        if file.isBinary || file.tooLarge { return [] }
+        guard let review = store.review else { return [] }
+        return review.diffRows(for: file)
+    }
+}
+
+/// Empty / binary / too-large detail state.
+public struct EmptyStateView: View {
+    public let icon: String
+    public let title: String
+    public let message: String
+
+    public init(icon: String, title: String, message: String) {
+        self.icon = icon
+        self.title = title
+        self.message = message
+    }
+
+    public var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 36))
+                .foregroundStyle(.secondary)
+            Text(title)
+                .font(.headline)
+            if !message.isEmpty {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("diff-empty-state")
+    }
+}

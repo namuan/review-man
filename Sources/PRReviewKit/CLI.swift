@@ -4,7 +4,7 @@ public enum PRReviewCLI {
 
     public static let version = "1.0.0"
 
-    public static func run(_ args: [String]) -> Int32 {
+    public static func run(_ args: [String]) async -> Int32 {
         var demo = false
         var dump: (cols: Int, rows: Int)?
         var ref: String?
@@ -52,27 +52,19 @@ public enum PRReviewCLI {
         } else {
             do {
                 let c = GitHubClient()
-                try GH.ensureGH()
+                try await c.ensureAvailable()
                 fputs("Resolving PR reference…\n", stderr)
-                let ep = try c.resolveEndpoint(from: ref!)
+                let ep = try await c.resolveEndpoint(from: ref!)
                 fputs("Fetching PR \(ep)…\n", stderr)
-                let pr = try c.fetchPRInfo(ep)
+                let pr = try await c.fetchPRInfo(ep)
                 fputs("Fetching diff…\n", stderr)
-                let files = try c.fetchDiff(ep)
+                let files = try await c.fetchDiff(ep)
                 fputs("Fetching review threads…\n", stderr)
-                let threads = try c.fetchThreads(ep)
-                let drafts = DraftStore.loadDrafts(ep, sha: pr.headRefOid)
-                let viewed = DraftStore.loadViewed(ep, sha: pr.headRefOid)
-                model = AppModel()
-                model.endpoint = ep
-                model.pr = pr
-                model.headOID = pr.headRefOid
-                model.files = files
-                model.threads = threads
-                model.drafts = drafts
-                model.viewed = viewed
-                model.rebuildRows()
-                model.loaded = true
+                let threads = try await c.fetchThreads(ep)
+                model = await PRReviewCLI.makeModel(
+                    endpoint: ep, pr: pr, files: files, threads: threads,
+                    persistence: ReviewPersistence.shared
+                )
                 client = c
             } catch {
                 fputs("Error: \(error)\n", stderr)
@@ -134,6 +126,46 @@ public enum PRReviewCLI {
         let parts = s.lowercased().split(separator: "x", omittingEmptySubsequences: false)
         guard parts.count == 2, let w = Int(parts[0]), let h = Int(parts[1]) else { return nil }
         return (w, h)
+    }
+
+    /// Builds the review model from fetched data plus persisted local state.
+    /// Local-state loads are all-or-nothing: if drafts OR viewed marks fail to
+    /// load, both are reset to empty and the failure is recorded durably, so a
+    /// partial restore is never presented as complete. Restored drafts are
+    /// validated against the fetched diff so invalid startup anchors become
+    /// orphans (and are excluded from submission) immediately.
+    static func makeModel(
+        endpoint: PREndpoint,
+        pr: PRInfo,
+        files: [DiffFile],
+        threads: [PRThread],
+        persistence: any ReviewPersisting
+    ) async -> AppModel {
+        var drafts: [DraftComment] = []
+        var viewed: Set<String> = []
+        var loadFailure: String?
+        do {
+            drafts = try await persistence.loadDrafts(for: endpoint, headSHA: pr.headRefOid)
+            viewed = try await persistence.loadViewed(for: endpoint, headSHA: pr.headRefOid)
+        } catch {
+            drafts = []
+            viewed = []
+            loadFailure = "\(error)"
+        }
+        let m = AppModel()
+        m.endpoint = endpoint
+        m.pr = pr
+        m.headOID = pr.headRefOid
+        m.files = files
+        m.threads = threads
+        m.drafts = DraftAnchorValidator.revalidated(drafts, against: files)
+        m.viewed = viewed
+        if let loadFailure {
+            m.persistenceFailure = PersistenceFailure(operation: "load", message: loadFailure)
+        }
+        m.rebuildRows()
+        m.loaded = true
+        return m
     }
 
     static let usage = """

@@ -40,25 +40,41 @@ public enum PayloadBuilder {
         event: String,
         drafts: [DraftComment]
     ) -> ReviewPayload {
-        let comments = drafts.map { d in
-            ReviewComment(
-                path: d.path,
-                line: d.line,
-                side: d.side,
-                body: d.body,
-                start_line: d.startLine,
-                start_side: d.startSide
-            )
-        }
+        // Orphaned drafts (anchors no longer in the diff) are never submitted.
+        let comments = drafts
+            .filter { !$0.isOrphaned }
+            .map { d in
+                ReviewComment(
+                    path: d.path,
+                    line: d.line,
+                    side: d.side,
+                    body: d.body,
+                    start_line: d.startLine,
+                    start_side: d.startSide
+                )
+            }
         return ReviewPayload(commit_id: commitID, event: event, body: body, comments: comments)
     }
 
-    /// Writes JSON to a temp file and returns its path (for `gh api --input`).
+    /// Writes JSON to a private temp file (mode 0600) and returns its path
+    /// (for `gh api --input`). Callers are responsible for removing the file.
     static func writeJSONToTemp<T: Encodable>(_ value: T) throws -> String {
+        try writeJSONToTemp(value, in: FileManager.default.temporaryDirectory)
+    }
+
+    static func writeJSONToTemp<T: Encodable>(_ value: T, in directory: URL) throws -> String {
         let data = try JSONEncoder().encode(value)
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("prr-payload-\(UUID().uuidString).json")
-        try data.write(to: url)
-        return url.path
+        let url = try SecureTemporaryFile.make(prefix: "prr-payload", in: directory)
+        do {
+            // Write through a handle opened on the already-private file so the
+            // default-permission `Data.write(.atomic)` replacement is avoided.
+            let handle = try FileHandle(forWritingTo: url)
+            defer { try? handle.close() }
+            try handle.write(contentsOf: data)
+            return url.path
+        } catch {
+            try? FileManager.default.removeItem(at: url)
+            throw error
+        }
     }
 }

@@ -51,6 +51,18 @@ public enum ReviewEvent: Int, CaseIterable {
     }
 }
 
+/// The most recent local-persistence failure, retained beyond the timed
+/// message banner so a window close can warn about it later.
+public struct PersistenceFailure {
+    public let operation: String
+    public let message: String
+
+    public init(operation: String, message: String) {
+        self.operation = operation
+        self.message = message
+    }
+}
+
 /// Single source of truth for the app state.
 public final class AppModel {
 
@@ -94,18 +106,19 @@ public final class AppModel {
     public var helpScroll = 0
     public var prBodyScroll = 0
     public var loading = false
-    public var generation = 0
     public var dirty = true
     public var shouldQuit = false
+    /// Cleared on every successful persistence operation; set on failure. Used
+    /// for the close-warning contract and persisted across message expiry.
+    public var persistenceFailure: PersistenceFailure?
 
-    private var tokenCache: [String: [CodeToken]] = [:]
+    private let tokenCache = SyntaxTokenCache()
 
-    /// Cached syntax tokens for a diff line (keyed by content, per current path).
+    /// Cached syntax tokens for a diff line, keyed by language AND content
+    /// (bounded LRU). Identical content in different languages never shares
+    /// tokens.
     public func tokens(for content: String, path: String) -> [CodeToken] {
-        if let cached = tokenCache[content] { return cached }
-        let tokens = Highlighter.tokenize(content, Highlighter.language(for: path))
-        tokenCache[content] = tokens
-        return tokens
+        tokenCache.tokens(for: content, language: Highlighter.language(for: path))
     }
 
     public init() {}
@@ -144,6 +157,18 @@ public final class AppModel {
                 drafts: drafts,
                 outdatedExpanded: outdatedExpanded
             ))
+        }
+        // Orphaned drafts whose path vanished from the diff are surfaced on the
+        // last file so they stay visible and deletable.
+        if !files.isEmpty, let last = newRows.indices.last {
+            let knownPaths = Set(files.map { $0.path })
+            let pathless = drafts.filter { $0.isOrphaned && !knownPaths.contains($0.path) }
+            if !pathless.isEmpty {
+                if !newRows[last].contains(.orphanedHeader) {
+                    newRows[last].append(.orphanedHeader)
+                }
+                newRows[last].append(contentsOf: pathless.map { .draft(draftID: $0.id) })
+            }
         }
         rows = newRows
         clampCursor()

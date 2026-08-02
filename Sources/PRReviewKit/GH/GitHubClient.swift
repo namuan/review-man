@@ -61,17 +61,105 @@ private struct GQLSingleThread: Decodable {
     let node: Wrap?
 }
 
-/// GitHub client backed by the `gh` CLI. All I/O is synchronous; callers run it
-/// on a background queue.
-public final class GitHubClient {
+private struct GQLEnvelope<T: Decodable>: Decodable {
+    struct Err: Decodable { let message: String }
+    let data: T?
+    let errors: [Err]?
+}
 
-    public init() {}
+/// One GraphQL variable value. Only values a `gh api graphql` `-F` flag can
+/// express: a string (gh infers numbers/booleans) or an explicit JSON null.
+private enum GraphQLVariable {
+    case string(String)
+    case null
+}
+
+/// GitHub client backed by the `gh` CLI. All I/O is asynchronous and routed
+/// through an injectable `CommandRunning` seam so tests never touch a real
+/// process.
+public final class GitHubClient: GitHubServing {
+
+    private let commandRunner: CommandRunning
+    private let payloadDirectory: URL
+    private let resolver: (any GitHubExecutableResolving & GitHubExecutableInspecting)
+
+    public init(
+        commandRunner: CommandRunning = SystemCommandRunner(),
+        payloadDirectory: URL = FileManager.default.temporaryDirectory,
+        resolver: (any GitHubExecutableResolving & GitHubExecutableInspecting)? = nil
+    ) {
+        self.commandRunner = commandRunner
+        self.payloadDirectory = payloadDirectory
+        self.resolver = resolver ?? GitHubExecutableResolver()
+    }
+
+    public func dependencyStatus() async -> GitHubDependencyStatus {
+        await GitHubDependencyChecker(runner: commandRunner, resolver: resolver).check()
+    }
+
+    // MARK: - Command helpers
+
+    public func ensureAvailable() async throws {
+        do {
+            _ = try await commandRunner.run(["--version"], timeout: 30)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            // A broken or missing `gh` maps to the same actionable message as
+            // a resolver miss.
+            throw GitHubError.ghUnavailable(
+                "The `gh` GitHub CLI is required but could not be run.\n"
+                + "Install it with:  brew install gh\n"
+                + "Then authenticate with:  gh auth login"
+            )
+        }
+    }
+
+    private func runJSON<T: Decodable>(_ args: [String]) async throws -> T {
+        let r = try await commandRunner.run(args, timeout: GH.defaultTimeout)
+        do {
+            return try JSONDecoder().decode(T.self, from: r.data)
+        } catch {
+            throw GitHubError.parse("Could not decode response for: \(args.first ?? "gh api")")
+        }
+    }
+
+    /// Runs `gh api graphql` with a static query string and typed variables.
+    /// Surfaces GraphQL `errors` payloads as `.api`.
+    private func runGraphQL<T: Decodable>(
+        query: String,
+        variables: [String: GraphQLVariable]
+    ) async throws -> T {
+        var args = ["api", "graphql", "-f", "query=\(query)"]
+        for (k, v) in variables.sorted(by: { $0.key < $1.key }) {
+            switch v {
+            case .string(let s):
+                args.append("-F")
+                args.append("\(k)=\(s)")
+            case .null:
+                args.append("-F")
+                args.append("\(k)=null")
+            }
+        }
+        let r = try await commandRunner.run(args, timeout: GH.defaultTimeout)
+        let decoder = JSONDecoder()
+        guard let env = try? decoder.decode(GQLEnvelope<T>.self, from: r.data) else {
+            throw GitHubError.parse("Could not decode GraphQL response")
+        }
+        if let errors = env.errors, !errors.isEmpty {
+            throw GitHubError.api(errors.map { $0.message }.joined(separator: "\n"))
+        }
+        guard let data = env.data else {
+            throw GitHubError.api("Empty GraphQL response")
+        }
+        return data
+    }
 
     // MARK: - Endpoint resolution
 
     /// Accepts: full PR URL, `owner/repo#number`, or a bare number (resolved
     /// against the repository of the current working directory).
-    public func resolveEndpoint(from arg: String) throws -> PREndpoint {
+    public func resolveEndpoint(from arg: String) async throws -> PREndpoint {
         var trimmed = arg.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.hasSuffix("/") { trimmed.removeLast() }
         if trimmed.hasPrefix("https://github.com/") || trimmed.hasPrefix("http://github.com/") {
@@ -96,7 +184,10 @@ public final class GitHubClient {
         }
         // bare number: resolve repo from cwd
         if let n = Int(trimmed) {
-            let out = try GH.run(["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"])
+            let out = try await commandRunner.run(
+                ["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"],
+                timeout: GH.defaultTimeout
+            )
             let name = String(data: out.data, encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let parts = name.split(separator: "/")
@@ -128,10 +219,10 @@ public final class GitHubClient {
         let author: AuthorDTO
     }
 
-    public func fetchPRInfo(_ ep: PREndpoint) throws -> PRInfo {
+    public func fetchPRInfo(_ ep: PREndpoint) async throws -> PRInfo {
         let fields = "number,title,body,state,isDraft,headRefOid,headRefName,baseRefName,"
             + "additions,deletions,changedFiles,reviewDecision,url,author"
-        let dto: PRInfoDTO = try GH.runJSON([
+        let dto: PRInfoDTO = try await runJSON([
             "pr", "view", "--repo", "\(ep.owner)/\(ep.repo)", String(ep.number), "--json", fields,
         ])
         return PRInfo(
@@ -153,22 +244,25 @@ public final class GitHubClient {
     }
 
     /// Fetches the full unified diff; falls back to the per-file `files`
-    /// endpoint when the raw diff fails (huge PRs, 406s, etc).
-    public func fetchDiff(_ ep: PREndpoint) throws -> [DiffFile] {
+    /// endpoint when the raw diff fails (huge PRs, 406s, etc). Cancellation is
+    /// never swallowed by the fallback.
+    public func fetchDiff(_ ep: PREndpoint) async throws -> [DiffFile] {
         do {
-            let r = try GH.run([
+            let r = try await commandRunner.run([
                 "api", "repos/\(ep.owner)/\(ep.repo)/pulls/\(ep.number)",
                 "-H", "Accept: application/vnd.github.v3.diff",
-            ])
+            ], timeout: GH.defaultTimeout)
             let text = String(data: r.data, encoding: .utf8) ?? ""
             let files = DiffParser.parse(text)
             if !files.isEmpty || text.isEmpty {
                 return files
             }
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             // fall through to the files endpoint
         }
-        return try fetchFilesFallback(ep)
+        return try await fetchFilesFallback(ep)
     }
 
     private struct PRFileDTO: Decodable {
@@ -181,8 +275,8 @@ public final class GitHubClient {
         let previous_filename: String?
     }
 
-    private func fetchFilesFallback(_ ep: PREndpoint) throws -> [DiffFile] {
-        let dtos: [PRFileDTO] = try GH.runJSON([
+    private func fetchFilesFallback(_ ep: PREndpoint) async throws -> [DiffFile] {
+        let dtos: [PRFileDTO] = try await runJSON([
             "api", "repos/\(ep.owner)/\(ep.repo)/pulls/\(ep.number)/files", "--paginate",
         ])
         return dtos.map { dto in
@@ -215,60 +309,57 @@ public final class GitHubClient {
         }
     }
 
-    // MARK: - Review threads (GraphQL, cursor-paginated)
+    // MARK: - Review threads (GraphQL, cursor-paginated, variable-driven)
 
-    private func threadsQuery(after: String?) -> String {
-        let afterClause = after.map { ", after: \"\($0)\"" } ?? ""
-        return """
-        query($owner: String!, $repo: String!, $number: Int!) {
-          repository(owner: $owner, name: $repo) {
-            pullRequest(number: $number) {
-              reviewThreads(first: 100\(afterClause)) {
-                pageInfo { hasNextPage endCursor }
-                nodes {
-                  id isResolved isOutdated path line originalLine diffSide startLine originalStartLine
-                  comments(first: 100) {
-                    nodes { id databaseId body author { login } createdAt }
-                    pageInfo { hasNextPage endCursor }
-                  }
-                }
-              }
-            }
-          }
-        }
-        """
-    }
-
-    private func threadCommentsQuery(threadID: String, after: String) -> String {
-        """
-        query {
-          node(id: "\(threadID)") {
-            ... on ReviewThread {
-              comments(first: 100, after: "\(after)") {
+    private static let threadsQuery = """
+    query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
+      repository(owner: $owner, name: $repo) {
+        pullRequest(number: $number) {
+          reviewThreads(first: 100, after: $cursor) {
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              id isResolved isOutdated path line originalLine diffSide startLine originalStartLine
+              comments(first: 100) {
                 nodes { id databaseId body author { login } createdAt }
                 pageInfo { hasNextPage endCursor }
               }
             }
           }
         }
-        """
+      }
     }
+    """
 
-    public func fetchThreads(_ ep: PREndpoint) throws -> [PRThread] {
+    private static let threadCommentsQuery = """
+    query($threadID: ID!, $cursor: String!) {
+      node(id: $threadID) {
+        ... on ReviewThread {
+          comments(first: 100, after: $cursor) {
+            nodes { id databaseId body author { login } createdAt }
+            pageInfo { hasNextPage endCursor }
+          }
+        }
+      }
+    }
+    """
+
+    public func fetchThreads(_ ep: PREndpoint) async throws -> [PRThread] {
         var threads: [PRThread] = []
         var after: String?
         repeat {
-            let data: GQLThreadsData = try GH.runGraphQL(
-                query: threadsQuery(after: after),
-                variables: [
-                    "owner": ep.owner,
-                    "repo": ep.repo,
-                    "number": String(ep.number),
-                ]
+            let variables: [String: GraphQLVariable] = [
+                "owner": .string(ep.owner),
+                "repo": .string(ep.repo),
+                "number": .string(String(ep.number)),
+                "cursor": after.map { .string($0) } ?? .null,
+            ]
+            let data: GQLThreadsData = try await runGraphQL(
+                query: Self.threadsQuery,
+                variables: variables
             )
             let conn = data.repository.pullRequest.reviewThreads
             for node in conn.nodes {
-                let comments = try fetchThreadComments(threadID: node.id, initial: node.comments)
+                let comments = try await fetchThreadComments(threadID: node.id, initial: node.comments)
                 threads.append(PRThread(
                     id: node.id,
                     path: node.path,
@@ -287,13 +378,19 @@ public final class GitHubClient {
         return threads
     }
 
-    private func fetchThreadComments(threadID: String, initial: GQLCommentConn) throws -> [PRComment] {
+    private func fetchThreadComments(
+        threadID: String,
+        initial: GQLCommentConn
+    ) async throws -> [PRComment] {
         var comments = initial.nodes.map { nodeToComment($0) }
         var cursor = initial.pageInfo.hasNextPage ? initial.pageInfo.endCursor : nil
         while let c = cursor {
-            let data: GQLSingleThread = try GH.runGraphQL(
-                query: threadCommentsQuery(threadID: threadID, after: c),
-                variables: [:]
+            let data: GQLSingleThread = try await runGraphQL(
+                query: Self.threadCommentsQuery,
+                variables: [
+                    "threadID": .string(threadID),
+                    "cursor": .string(c),
+                ]
             )
             guard let conn = data.node?.comments else { break }
             comments.append(contentsOf: conn.nodes.map { nodeToComment($0) })
@@ -311,10 +408,10 @@ public final class GitHubClient {
         )
     }
 
-    public func fetchAll(_ ep: PREndpoint) throws -> FetchBundle {
-        let pr = try fetchPRInfo(ep)
-        let files = try fetchDiff(ep)
-        let threads = try fetchThreads(ep)
+    public func fetchAll(_ ep: PREndpoint) async throws -> FetchBundle {
+        let pr = try await fetchPRInfo(ep)
+        let files = try await fetchDiff(ep)
+        let threads = try await fetchThreads(ep)
         return FetchBundle(pr: pr, files: files, threads: threads)
     }
 
@@ -326,37 +423,37 @@ public final class GitHubClient {
         body: String,
         event: String,
         drafts: [DraftComment]
-    ) throws {
+    ) async throws {
         let payload = PayloadBuilder.reviewPayload(
             commitID: commitID, body: body, event: event, drafts: drafts
         )
-        let file = try PayloadBuilder.writeJSONToTemp(payload)
+        let file = try PayloadBuilder.writeJSONToTemp(payload, in: payloadDirectory)
         defer { try? FileManager.default.removeItem(atPath: file) }
-        _ = try GH.run([
+        _ = try await commandRunner.run([
             "api", "-X", "POST",
             "repos/\(ep.owner)/\(ep.repo)/pulls/\(ep.number)/reviews",
             "--input", file,
-        ])
+        ], timeout: GH.defaultTimeout)
     }
 
-    public func replyToThread(_ ep: PREndpoint, commentID: Int, body: String) throws {
+    public func replyToThread(_ ep: PREndpoint, commentID: Int, body: String) async throws {
         struct Reply: Encodable { let body: String }
-        let file = try PayloadBuilder.writeJSONToTemp(Reply(body: body))
+        let file = try PayloadBuilder.writeJSONToTemp(Reply(body: body), in: payloadDirectory)
         defer { try? FileManager.default.removeItem(atPath: file) }
-        _ = try GH.run([
+        _ = try await commandRunner.run([
             "api", "-X", "POST",
             "repos/\(ep.owner)/\(ep.repo)/pulls/\(ep.number)/comments/\(commentID)/replies",
             "--input", file,
-        ])
+        ], timeout: GH.defaultTimeout)
     }
 
-    public func resolveThread(_ ep: PREndpoint, threadID: String, resolved: Bool) throws {
+    public func resolveThread(_ ep: PREndpoint, threadID: String, resolved: Bool) async throws {
         // ResolveReviewThreadInput/UnresolveReviewThreadInput contain only
         // clientMutationId and threadId (verified against the GitHub schema).
         let mutation = resolved
             ? "mutation($id: ID!) { resolveReviewThread(input: { threadId: $id }) { thread { id isResolved } } }"
             : "mutation($id: ID!) { unresolveReviewThread(input: { threadId: $id }) { thread { id isResolved } } }"
         struct EmptyData: Decodable {}
-        _ = try GH.runGraphQL(query: mutation, variables: ["id": threadID]) as EmptyData
+        _ = try await runGraphQL(query: mutation, variables: ["id": .string(threadID)]) as EmptyData
     }
 }

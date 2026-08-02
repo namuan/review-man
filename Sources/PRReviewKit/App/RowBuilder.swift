@@ -7,12 +7,15 @@ public enum Row: Equatable {
     case thread(threadID: String)
     case draft(draftID: UUID)
     case outdatedHeader
+    case orphanedHeader
     case empty
 }
 
 /// Builds the ordered list of visible rows for a file: hunks and lines in diff
 /// order, with comment threads and drafts attached right after the line they
-/// anchor to (old line numbers for LEFT, new for RIGHT).
+/// anchor to (old line numbers for LEFT, new for RIGHT). Orphaned drafts (their
+/// anchor is absent from the diff) are collected into a dedicated section at
+/// the end and are never attached to a diff line.
 public enum RowBuilder {
 
     public static func build(
@@ -28,7 +31,10 @@ public enum RowBuilder {
             .sorted { ($0.line ?? $0.originalLine ?? Int.max, $0.lastCommentAt) <
                       ($1.line ?? $1.originalLine ?? Int.max, $1.lastCommentAt) }
         let fileDrafts = drafts
-            .filter { $0.path == file.path }
+            .filter { $0.path == file.path && !$0.isOrphaned }
+            .sorted { ($0.line, $0.createdAt) < ($1.line, $1.createdAt) }
+        let orphanDrafts = drafts
+            .filter { $0.path == file.path && $0.isOrphaned }
             .sorted { ($0.line, $0.createdAt) < ($1.line, $1.createdAt) }
 
         let outdated = fileThreads.filter { $0.isOutdated }
@@ -79,12 +85,20 @@ public enum RowBuilder {
             }
         }
 
-        // Unanchored (e.g. the diff no longer contains the line): append at end.
+        // Unanchored non-orphaned drafts (defensive): append at end.
+        for d in fileDrafts where !attached.contains(d.id.uuidString) {
+            rows.append(.draft(draftID: d.id))
+        }
         for t in active where !attached.contains(t.id) {
             rows.append(.thread(threadID: t.id))
         }
-        for d in fileDrafts where !attached.contains(d.id.uuidString) {
-            rows.append(.draft(draftID: d.id))
+
+        // Dedicated orphaned section.
+        if !orphanDrafts.isEmpty {
+            rows.append(.orphanedHeader)
+            for d in orphanDrafts {
+                rows.append(.draft(draftID: d.id))
+            }
         }
         return rows
     }

@@ -15,7 +15,7 @@ public struct CodeToken: Equatable {
     public var kind: TokenKind
 }
 
-public struct Language {
+public struct Language: Equatable, Hashable {
     public var lineComments: [String]
     public var blockCommentStart: String?
     public var blockCommentEnd: String?

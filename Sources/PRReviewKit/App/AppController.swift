@@ -1,95 +1,239 @@
 import Foundation
 
 /// Handles all input and drives background GitHub operations. Runs entirely on
-/// the main tick; heavy work is dispatched to a queue and applied later via
-/// `drainPending()`, guarded by a generation counter.
+/// the main tick; network work runs as cancellable tasks and finished outcomes
+/// are applied later via `drainPending()`. Operations are tracked per lane
+/// (fetch / submit / reply-by-thread / resolve-by-thread / persistence), so
+/// unrelated operations never invalidate each other.
 public final class AppController {
 
     public enum Outcome {
+        /// A fetch succeeded and is awaiting async head-SHA migration.
         case fetch(FetchBundle)
+        /// Migration finished; apply the bundle with the migrated drafts and
+        /// viewed marks, plus the nonmodal status message.
+        case fetchApplied(FetchBundle, [DraftComment], Set<String>, String)
         case fetchFailed(Error)
-        case submitDone
+        /// Migration could not preserve local state; the model is unchanged.
+        case migrationFailed(String)
+        case submitDone(SubmitResult)
         case submitFailed(Error)
         case replyDone
         case replyFailed(Error)
         case resolveDone
         case resolveFailed(threadID: String, wasResolved: Bool, error: Error)
+        case persistenceSaved
+        case persistenceFailed(operation: String, Error)
     }
 
     public let model: AppModel
-    private let client: GitHubClient?
-    private let workQueue = DispatchQueue(label: "pr-review.work")
+    private let client: GitHubServing?
+    private let persistence: any ReviewPersisting
+    private let clipboard: ClipboardWriting
     private let lock = NSLock()
-    private var pending: [(generation: Int, outcome: Outcome)] = []
+    private var pending: [(token: OperationToken, outcome: Outcome)] = []
     private var deleteDraftID: UUID?
+    private let tracker = OperationTracker()
+    private let operations: ReviewOperations?
 
-    public init(model: AppModel, client: GitHubClient?) {
+    public init(
+        model: AppModel,
+        client: GitHubServing?,
+        clipboard: ClipboardWriting = SystemClipboard(),
+        persistence: any ReviewPersisting = ReviewPersistence.shared
+    ) {
         self.model = model
         self.client = client
+        self.clipboard = clipboard
+        self.persistence = persistence
+        self.operations = client.map { ReviewOperations(service: $0, persistence: persistence) }
     }
 
-    private func push(_ gen: Int, _ outcome: Outcome) {
+    private func deliver(_ token: OperationToken, _ outcome: Outcome) {
         lock.lock()
-        pending.append((gen, outcome))
+        pending.append((token, outcome))
         lock.unlock()
+    }
+
+    /// Starts an operation on a lane. The newest fetch cancels the previous
+    /// in-flight fetch; writes are never cancelled by a refresh. Cancellation
+    /// of a task drops its outcome without showing an error.
+    private func launch(_ lane: OperationLane, _ operation: @escaping () async throws -> Outcome) {
+        let token = tracker.begin(lane)
+        model.loading = true
+        let task = Task { [weak self] in
+            do {
+                let outcome = try await operation()
+                self?.deliver(token, outcome)
+            } catch is CancellationError {
+                self?.discard(token)
+            } catch {
+                // Operation closures map their own errors to outcomes; anything
+                // escaping here is a programming error and is dropped quietly.
+                self?.discard(token)
+            }
+        }
+        if lane == .fetch {
+            tracker.cancelPreviousFetchTask()
+            tracker.setFetchTask(task)
+        }
+    }
+
+    private func discard(_ token: OperationToken) {
+        tracker.complete(token)
     }
 
     /// Applies any finished background work; call on every tick.
     public func drainPending() {
-        var batch: [(Int, Outcome)] = []
+        var batch: [(OperationToken, Outcome)] = []
         lock.lock()
         batch = pending
         pending.removeAll()
         lock.unlock()
-        for (gen, outcome) in batch {
-            guard gen == model.generation else { continue }
+        for (token, outcome) in batch {
+            guard tracker.isCurrent(token) else {
+                tracker.complete(token)
+                continue
+            }
             switch outcome {
             case .fetch(let bundle):
-                apply(bundle)
-                model.loading = false
-                model.setMessage("Refreshed.")
-            case .fetchFailed(let e):
-                model.loading = false
-                model.setMessage("Refresh failed: \(e)", isError: true, duration: 15)
-            case .submitDone:
-                model.drafts.removeAll()
-                persistDrafts()
-                model.rebuildRows()
-                model.setMessage("Review submitted.")
-                refresh()
-            case .submitFailed(let e):
-                model.setMessage("Submit failed: \(e)", isError: true, duration: 20)
-            case .replyDone:
-                model.setMessage("Reply posted.")
-                refresh()
-            case .replyFailed(let e):
-                model.setMessage("Reply failed: \(e)", isError: true, duration: 15)
-            case .resolveDone:
-                model.setMessage("Thread updated.")
-            case .resolveFailed(let threadID, let wasResolved, let error):
-                // roll back the optimistic toggle
-                if let idx = model.threads.firstIndex(where: { $0.id == threadID }) {
-                    model.threads[idx].isResolved = wasResolved
-                    model.rebuildRows()
+                // Begin the async head-SHA migration. The token stays active
+                // until the migration outcome lands, keeping loading true.
+                let snapshot = (model.endpoint, model.headOID, model.drafts, model.viewed)
+                let task = Task { [weak self] in
+                    guard let self else { return }
+                    let result = await self.migrateFetch(snapshot: snapshot, bundle: bundle)
+                    self.deliver(token, result)
                 }
-                model.setMessage("Resolve failed: \(error)", isError: true, duration: 15)
+                tracker.setMigrationTask(task)
+            default:
+                tracker.complete(token)
+                applyOutcome(outcome)
             }
-            model.dirty = true
         }
+        model.loading = tracker.hasActiveOperations
+        model.dirty = true
         if let until = model.messageUntil, until < Date() {
             model.message = nil
             model.dirty = true
         }
     }
 
-    private func apply(_ bundle: FetchBundle) {
+    /// Applies a single operation outcome to the model. Internal so tests can
+    /// exercise failure paths without spawning background work.
+    func applyOutcome(_ outcome: Outcome) {
+        switch outcome {
+        case .fetch:
+            break // handled by drainPending via the async migration path
+        case .fetchApplied(let bundle, let drafts, let viewed, let message):
+            applyFetch(bundle, drafts: drafts, viewed: viewed, message: message)
+        case .fetchFailed(let e):
+            model.loading = false
+            model.setMessage("Refresh failed: \(e)", isError: true, duration: 15)
+        case .migrationFailed(let reason):
+            model.persistenceFailure = PersistenceFailure(
+                operation: "refresh", message: reason
+            )
+            model.setMessage("Refresh was not applied: \(reason)", isError: true, duration: 20)
+        case .submitDone(let result):
+            // Remove only drafts equal to the submitted snapshot (drafts
+            // created or edited while submission was in flight stay local).
+            let submitted = result.submitted.drafts
+            model.drafts.removeAll { draft in
+                submitted.contains(draft)
+            }
+            persistDrafts()
+            model.rebuildRows()
+            model.setMessage("Review submitted.")
+            refresh()
+        case .submitFailed(let e):
+            model.setMessage("Submit failed: \(e)", isError: true, duration: 20)
+        case .replyDone:
+            model.setMessage("Reply posted.")
+            refresh()
+        case .replyFailed(let e):
+            model.setMessage("Reply failed: \(e)", isError: true, duration: 15)
+        case .resolveDone:
+            model.setMessage("Thread updated.")
+        case .resolveFailed(let threadID, let wasResolved, let error):
+            // roll back the optimistic toggle
+            if let idx = model.threads.firstIndex(where: { $0.id == threadID }) {
+                model.threads[idx].isResolved = wasResolved
+                model.rebuildRows()
+            }
+            model.setMessage("Resolve failed: \(error)", isError: true, duration: 15)
+        case .persistenceSaved:
+            model.persistenceFailure = nil
+        case .persistenceFailed(let operation, let error):
+            model.persistenceFailure = PersistenceFailure(
+                operation: operation, message: "\(error)"
+            )
+            let label = operation == "viewed" ? "viewed marks" : "drafts"
+            model.setMessage("Could not save local \(label). Changes remain in memory.", isError: true, duration: 15)
+        }
+    }
+
+    /// Applies a fetched bundle with the given (already migrated and validated)
+    /// drafts and viewed marks. Internal so tests can drive it directly.
+    func applyFetch(
+        _ bundle: FetchBundle,
+        drafts: [DraftComment]? = nil,
+        viewed: Set<String>? = nil,
+        message: String? = nil
+    ) {
+        // Revalidation is idempotent: anchors are recomputed against the new
+        // diff, so stale legacy drafts become orphans and reappearing anchors
+        // automatically reattach.
+        let validated = DraftAnchorValidator.revalidated(drafts ?? model.drafts, against: bundle.files)
         model.pr = bundle.pr
         model.headOID = bundle.pr.headRefOid
         model.files = bundle.files
         model.threads = bundle.threads
+        model.drafts = validated
+        if let viewed {
+            model.viewed = viewed
+        }
         model.selectedFile = min(model.selectedFile, max(0, model.files.count - 1))
         model.rebuildRows()
         model.dirty = true
+        if let message {
+            model.setMessage(message)
+        }
+    }
+
+    /// Head-SHA migration (Phase 3, now via `ReviewOperations`). Runs off the
+    /// main tick against a snapshot taken at drain time; it never mutates the
+    /// model. The returned outcome is delivered back to `drainPending` and
+    /// applied on the main tick, so a superseding fetch simply drops the
+    /// (stale) result.
+    private func migrateFetch(
+        snapshot: (endpoint: PREndpoint?, headSHA: String, drafts: [DraftComment], viewed: Set<String>),
+        bundle: FetchBundle
+    ) async -> Outcome {
+        guard let endpoint = snapshot.endpoint, !model.isDemo, let operations else {
+            return .fetchApplied(bundle, snapshot.drafts, snapshot.viewed, "Refreshed.")
+        }
+        do {
+            let result = try await operations.migrate(
+                bundle: bundle,
+                endpoint: endpoint,
+                current: ReviewLocalState(
+                    headSHA: snapshot.headSHA,
+                    drafts: snapshot.drafts,
+                    viewed: snapshot.viewed
+                )
+            )
+            return .fetchApplied(
+                result.bundle,
+                result.localState.drafts,
+                result.localState.viewed,
+                result.message
+            )
+        } catch is CancellationError {
+            return .migrationFailed("cancelled while preserving local state.")
+        } catch {
+            return .migrationFailed("local state could not be preserved: \(error)")
+        }
     }
 
     // MARK: - Main dispatch
@@ -407,23 +551,23 @@ public final class AppController {
         guard model.focus == .diff, let row = model.row(at: model.cursorRow) else { return }
         guard case .thread(let id) = row, let t = model.thread(byID: id), !t.isOutdated else { return }
         let newState = !t.isResolved
+        let wasResolved = t.isResolved
         if let idx = model.threads.firstIndex(where: { $0.id == id }) {
             model.threads[idx].isResolved = newState
         }
         model.rebuildRows()
-        guard !model.isDemo, let client, let ep = model.endpoint else {
+        guard !model.isDemo, let operations, let ep = model.endpoint else {
             model.setMessage("Demo: resolve toggled locally.")
             return
         }
-        model.generation += 1
-        let gen = model.generation
-        let wasResolved = t.isResolved
-        workQueue.async { [weak self] in
+        launch(.resolve(threadID: id)) {
             do {
-                try client.resolveThread(ep, threadID: id, resolved: newState)
-                self?.push(gen, .resolveDone)
+                try await operations.setResolved(endpoint: ep, threadID: id, resolved: newState)
+                return .resolveDone
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
-                self?.push(gen, .resolveFailed(threadID: id, wasResolved: wasResolved, error: error))
+                return .resolveFailed(threadID: id, wasResolved: wasResolved, error: error)
             }
         }
     }
@@ -496,16 +640,15 @@ public final class AppController {
                 model.setMessage("Demo: reply added locally.")
                 return
             }
-            guard let client, let ep = model.endpoint else { return }
-            model.generation += 1
-            let gen = model.generation
-            model.loading = true
-            workQueue.async { [weak self] in
+            guard let operations, let ep = model.endpoint else { return }
+            launch(.reply(threadID: threadID)) {
                 do {
-                    try client.replyToThread(ep, commentID: commentID, body: trimmed)
-                    self?.push(gen, .replyDone)
+                    try await operations.reply(endpoint: ep, commentID: commentID, body: trimmed)
+                    return .replyDone
+                } catch is CancellationError {
+                    throw CancellationError()
                 } catch {
-                    self?.push(gen, .replyFailed(error))
+                    return .replyFailed(error)
                 }
             }
         case .composerBody:
@@ -616,7 +759,8 @@ public final class AppController {
     private func submitReview() {
         let event = model.composerEvent
         let body = model.composerBody
-        let drafts = model.drafts
+        // Only submittable (non-orphaned) drafts participate in a review.
+        let drafts = model.drafts.filter { !$0.isOrphaned }
         model.mode = .normal
         model.composerError = nil
         if event == .approve && body.isEmpty && !drafts.isEmpty {
@@ -625,27 +769,30 @@ public final class AppController {
             return
         }
         if model.isDemo {
-            model.drafts.removeAll()
+            model.drafts.removeAll { !$0.isOrphaned }
             persistDrafts()
             model.rebuildRows()
             model.setMessage("Demo mode — review not submitted.")
             return
         }
-        guard let client, let ep = model.endpoint else {
+        guard let operations, let ep = model.endpoint else {
             model.setMessage("Not connected to GitHub.", isError: true)
             return
         }
-        model.generation += 1
-        let gen = model.generation
-        model.loading = true
         model.setMessage("Submitting review…")
         let commitID = model.headOID
-        workQueue.async { [weak self] in
+        let eventValue = event
+        launch(.submit) {
             do {
-                try client.submitReview(ep, commitID: commitID, body: body, event: event.apiValue, drafts: drafts)
-                self?.push(gen, .submitDone)
+                let result = try await operations.submit(
+                    endpoint: ep, headSHA: commitID, body: body,
+                    event: eventValue, drafts: drafts
+                )
+                return .submitDone(result)
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
-                self?.push(gen, .submitFailed(error))
+                return .submitFailed(error)
             }
         }
     }
@@ -766,14 +913,41 @@ public final class AppController {
 
     // MARK: - Misc actions
 
-    private func persistDrafts() {
+    /// Persists the current drafts asynchronously. Failures surface through a
+    /// `.persistenceFailed` outcome (durable `persistenceFailure` + message)
+    /// applied on the main tick.
+    private func persistDrafts(_ drafts: [DraftComment]? = nil) {
         guard !model.isDemo, let ep = model.endpoint, !model.headOID.isEmpty else { return }
-        DraftStore.saveDrafts(model.drafts, ep, sha: model.headOID)
+        let toSave = drafts ?? model.drafts
+        let headSHA = model.headOID
+        let token = tracker.begin(.persistence)
+        Task { [weak self] in
+            do {
+                try await self?.persistence.saveDrafts(toSave, for: ep, headSHA: headSHA)
+                self?.deliver(token, .persistenceSaved)
+            } catch is CancellationError {
+                self?.discard(token)
+            } catch {
+                self?.deliver(token, .persistenceFailed(operation: "drafts", error))
+            }
+        }
     }
 
     private func persistViewed() {
         guard !model.isDemo, let ep = model.endpoint, !model.headOID.isEmpty else { return }
-        DraftStore.saveViewed(model.viewed, ep, sha: model.headOID)
+        let toSave = model.viewed
+        let headSHA = model.headOID
+        let token = tracker.begin(.persistence)
+        Task { [weak self] in
+            do {
+                try await self?.persistence.saveViewed(toSave, for: ep, headSHA: headSHA)
+                self?.deliver(token, .persistenceSaved)
+            } catch is CancellationError {
+                self?.discard(token)
+            } catch {
+                self?.deliver(token, .persistenceFailed(operation: "viewed", error))
+            }
+        }
     }
 
     public func refresh() {
@@ -785,18 +959,22 @@ public final class AppController {
             model.setMessage("Not connected to GitHub.", isError: true)
             return
         }
-        model.generation += 1
-        let gen = model.generation
-        model.loading = true
         model.setMessage("Refreshing…")
-        workQueue.async { [weak self] in
+        launch(.fetch) {
             do {
-                let bundle = try client.fetchAll(ep)
-                self?.push(gen, .fetch(bundle))
+                return .fetch(try await client.fetchAll(ep))
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
-                self?.push(gen, .fetchFailed(error))
+                return .fetchFailed(error)
             }
         }
+    }
+
+    /// Cancels the in-flight fetch, if any. No error is shown; the loading
+    /// indicator clears once the cancelled task unwinds.
+    public func cancelFetch() {
+        tracker.cancelFetch()
     }
 
     private func yankLine() {
@@ -805,15 +983,8 @@ public final class AppController {
         let line = info.line
         let num = line.newLine ?? line.oldLine ?? 0
         let text = "\(file.path):\(num) \(line.content)"
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/pbcopy")
-        let pipe = Pipe()
-        proc.standardInput = pipe
         do {
-            try proc.run()
-            pipe.fileHandleForWriting.write(Data(text.utf8))
-            try pipe.fileHandleForWriting.close()
-            proc.waitUntilExit()
+            try clipboard.write(text)
             model.setMessage("Copied \(file.path):\(num)")
         } catch {
             model.setMessage("Could not copy: \(error)", isError: true)

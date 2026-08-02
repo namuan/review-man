@@ -1,0 +1,762 @@
+import Foundation
+import AppKit
+import PRReviewKit
+
+// MARK: - Workflow state types
+
+/// Inline draft editor state.
+public struct DraftEditorState: Equatable {
+    public let draftID: UUID?
+    public let path: String
+    public let side: String
+    public let line: Int
+    public let startLine: Int?
+    public let startSide: String?
+    public var text: String
+
+    public init(
+        draftID: UUID?, path: String, side: String, line: Int,
+        startLine: Int? = nil, startSide: String? = nil, text: String = ""
+    ) {
+        self.draftID = draftID
+        self.path = path
+        self.side = side
+        self.line = line
+        self.startLine = startLine
+        self.startSide = startSide
+        self.text = text
+    }
+}
+
+/// Reply editor state, retained for retry after a failure.
+public struct ReplyEditorState: Equatable {
+    public let threadID: String
+    public let commentID: Int
+    public var body: String
+    public var retryFailed = false
+
+    public init(threadID: String, commentID: Int, body: String = "", retryFailed: Bool = false) {
+        self.threadID = threadID
+        self.commentID = commentID
+        self.body = body
+        self.retryFailed = retryFailed
+    }
+}
+
+/// Submit sheet state.
+public enum SubmitPresentationState: Equatable {
+    case hidden
+    case editing
+    case submitting
+    case failed(message: String)
+    /// The remote result is unknown (timeout/cancellation after dispatch);
+    /// drafts are retained and resubmission must be deliberate.
+    case uncertain(message: String)
+}
+
+/// A commentable line anchor for starting a draft.
+public struct DraftStartAnchor: Equatable {
+    public let path: String
+    public let side: String
+    public let line: Int
+    public let startLine: Int?
+    public let startSide: String?
+
+    public init(path: String, side: String, line: Int, startLine: Int? = nil, startSide: String? = nil) {
+        self.path = path
+        self.side = side
+        self.line = line
+        self.startLine = startLine
+        self.startSide = startSide
+    }
+}
+
+// MARK: - Workflow store extension
+
+extension ReviewSessionStore {
+
+    /// Mutable session data backing the immutable published presentation.
+    private struct SessionData {
+        var endpoint: PREndpoint?
+        var isDemo = false
+        var pr: PRInfo?
+        var files: [DiffFile] = []
+        var threads: [PRThread] = []
+        var drafts: [DraftComment] = []
+        var viewed: Set<String> = []
+        var headSHA = ""
+    }
+
+    private var session: SessionData {
+        get {
+            guard let review else { return SessionData() }
+            return SessionData(
+                endpoint: review.endpoint, isDemo: isDemoMode, pr: review.pr,
+                files: review.files, threads: review.threads,
+                drafts: review.drafts, viewed: review.viewed,
+                headSHA: review.pr?.headRefOid ?? ""
+            )
+        }
+        set {
+            publish(session: newValue)
+        }
+    }
+
+    private var isDemoMode: Bool {
+        demoSession
+    }
+
+    private func publish(session: SessionData) {
+        review = ReviewPresentation(
+            endpoint: session.endpoint, pr: session.pr, files: session.files,
+            threads: session.threads, drafts: session.drafts, viewed: session.viewed
+        )
+    }
+
+    // MARK: - Drafts
+
+    /// Starts a new draft editor anchored at the given line.
+    public func beginDraft(at anchor: DraftStartAnchor) {
+        draftEditor = DraftEditorState(
+            draftID: nil, path: anchor.path, side: anchor.side, line: anchor.line,
+            startLine: anchor.startLine, startSide: anchor.startSide
+        )
+    }
+
+    /// Opens an existing draft for editing.
+    public func editDraft(_ draft: DraftComment) {
+        draftEditor = DraftEditorState(
+            draftID: draft.id, path: draft.path, side: draft.side, line: draft.line,
+            startLine: draft.startLine, startSide: draft.startSide, text: draft.body
+        )
+    }
+
+    /// Cancels the editor without changes.
+    public func cancelDraftEditor() {
+        draftEditor = nil
+    }
+
+    /// Saves the editor: creates or updates the draft, persists, records
+    /// history. Empty text on a new draft discards it; empty text on an
+    /// existing draft deletes it.
+    public func saveDraftEditor() {
+        guard var editor = draftEditor else { return }
+        let trimmed = editor.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let id = editor.draftID {
+            // Edit or delete existing.
+            guard let index = session.drafts.firstIndex(where: { $0.id == id }) else {
+                draftEditor = nil
+                return
+            }
+            let before = session.drafts[index]
+            if trimmed.isEmpty {
+                var drafts = session.drafts
+                drafts.remove(at: index)
+                applyDraftMutation(DraftMutation(draftID: id, before: before, after: nil), drafts: drafts)
+            } else {
+                var updated = before
+                updated.body = trimmed
+                var drafts = session.drafts
+                drafts[index] = updated
+                applyDraftMutation(DraftMutation(draftID: id, before: before, after: updated), drafts: drafts)
+            }
+        } else {
+            guard !trimmed.isEmpty else {
+                draftEditor = nil // empty new draft is discarded
+                return
+            }
+            let draft = DraftComment(
+                path: editor.path, line: editor.line, side: editor.side, body: trimmed,
+                startLine: editor.startLine, startSide: editor.startSide
+            )
+            var drafts = session.drafts
+            drafts.append(draft)
+            applyDraftMutation(DraftMutation(draftID: draft.id, before: nil, after: draft), drafts: drafts)
+        }
+        draftEditor = nil
+    }
+
+    /// Deletes a draft (records history).
+    public func deleteDraft(_ draft: DraftComment) {
+        guard let index = session.drafts.firstIndex(where: { $0.id == draft.id }) else { return }
+        var drafts = session.drafts
+        drafts.remove(at: index)
+        applyDraftMutation(DraftMutation(draftID: draft.id, before: draft, after: nil), drafts: drafts)
+    }
+
+    private func applyDraftMutation(_ mutation: DraftMutation, drafts: [DraftComment]) {
+        var session = self.session
+        session.drafts = drafts
+        self.session = session
+        recordHistory(mutation)
+        persistDrafts()
+    }
+
+    /// All commentable-line anchors for a file's diff (for range selection).
+    public func commentableAnchors(for file: DiffFile) -> [DraftStartAnchor] {
+        file.hunks.enumerated().flatMap { hunkIndex, hunk in
+            hunk.lines.enumerated().compactMap { lineIndex, line in
+                DraftRangeValidator.anchor(for: file, hunkIndex: hunkIndex, lineIndex: lineIndex).map {
+                    DraftStartAnchor(path: $0.path, side: $0.side, line: $0.line,
+                                     startLine: $0.startLine, startSide: $0.startSide)
+                }
+            }
+        }
+    }
+
+    // MARK: - Undo / redo
+
+    public var canUndo: Bool { !undoStack.isEmpty }
+    public var canRedo: Bool { !redoStack.isEmpty }
+
+    private func recordHistory(_ mutation: DraftMutation) {
+        undoStack.append(mutation)
+        redoStack.removeAll()
+    }
+
+    public func undoDraft() {
+        guard let mutation = undoStack.popLast() else { return }
+        redoStack.append(mutation)
+        var session = self.session
+        if let before = mutation.before {
+            if let index = session.drafts.firstIndex(where: { $0.id == mutation.draftID }) {
+                session.drafts[index] = before
+            } else {
+                session.drafts.append(before)
+            }
+        } else {
+            session.drafts.removeAll { $0.id == mutation.draftID }
+        }
+        self.session = session
+        persistDrafts()
+    }
+
+    public func redoDraft() {
+        guard let mutation = redoStack.popLast() else { return }
+        undoStack.append(mutation)
+        var session = self.session
+        if let after = mutation.after {
+            if let index = session.drafts.firstIndex(where: { $0.id == mutation.draftID }) {
+                session.drafts[index] = after
+            } else {
+                session.drafts.append(after)
+            }
+        } else {
+            session.drafts.removeAll { $0.id == mutation.draftID }
+        }
+        self.session = session
+        persistDrafts()
+    }
+
+    // MARK: - Persistence
+
+    private func persistDrafts() {
+        guard let endpoint = session.endpoint, !session.headSHA.isEmpty else { return }
+        let drafts = session.drafts
+        let headSHA = session.headSHA
+        Task { [weak self] in
+            do {
+                try await self?.persistence.saveDrafts(drafts, for: endpoint, headSHA: headSHA)
+                self?.persistenceFailure = nil
+            } catch {
+                self?.persistenceFailure = PersistenceFailure(operation: "drafts", message: "\(error)")
+                self?.banner = SessionBanner(text: "Could not save local drafts. Changes remain in memory.", isError: true)
+            }
+        }
+    }
+
+    private func persistViewed() {
+        guard let endpoint = session.endpoint, !session.headSHA.isEmpty else { return }
+        let viewed = session.viewed
+        let headSHA = session.headSHA
+        Task { [weak self] in
+            do {
+                try await self?.persistence.saveViewed(viewed, for: endpoint, headSHA: headSHA)
+                self?.persistenceFailure = nil
+            } catch {
+                self?.persistenceFailure = PersistenceFailure(operation: "viewed", message: "\(error)")
+                self?.banner = SessionBanner(text: "Could not save local viewed marks. Changes remain in memory.", isError: true)
+            }
+        }
+    }
+}
+
+// MARK: - Viewed
+
+public extension ReviewSessionStore {
+    /// Toggles the local viewed mark for a file path and persists it.
+    func toggleViewed(filePath: String) {
+        var session = session
+        if session.viewed.contains(filePath) {
+            session.viewed.remove(filePath)
+        } else {
+            session.viewed.insert(filePath)
+        }
+        self.session = session
+        persistViewed()
+    }
+
+    // MARK: - Resolve / unresolve (optimistic + rollback)
+
+    /// Toggles a thread's resolved state optimistically, then syncs with
+    /// GitHub. A stale failure (superseded by a newer toggle on the same
+    /// thread) is ignored.
+    func toggleResolved(threadID: String) {
+        guard let index = session.threads.firstIndex(where: { $0.id == threadID }) else { return }
+        let thread = session.threads[index]
+        guard !thread.isOutdated else { return }
+        let newState = !thread.isResolved
+        let wasResolved = thread.isResolved
+
+        var session = session
+        session.threads[index].isResolved = newState
+        self.session = session
+
+        guard let endpoint = session.endpoint, !demoSession else {
+            return
+        }
+        resolveGenerations[threadID] = (resolveGenerations[threadID] ?? 0) + 1
+        let generation = resolveGenerations[threadID] ?? 1
+        let operations = ReviewOperations(service: service, persistence: persistence)
+        Task { [weak self] in
+            do {
+                try await operations.setResolved(endpoint: endpoint, threadID: threadID, resolved: newState)
+                self?.resolveHandlingCount += 1
+            } catch {
+                guard let self else { return }
+                self.resolveHandlingCount += 1
+                guard generation == self.resolveGenerations[threadID] else { return }
+                guard let currentIndex = self.session.threads.firstIndex(where: { $0.id == threadID }) else { return }
+                var session = self.session
+                session.threads[currentIndex].isResolved = wasResolved
+                self.session = session
+                self.banner = SessionBanner(text: "Resolve failed: \(error)", isError: true)
+            }
+        }
+    }
+
+    // MARK: - Reply (retryable)
+
+    func beginReply(threadID: String) {
+        guard let thread = session.threads.first(where: { $0.id == threadID }),
+              let commentID = thread.rootCommentID else { return }
+        replyEditors[threadID] = ReplyEditorState(threadID: threadID, commentID: commentID)
+    }
+
+    func updateReply(threadID: String, body: String) {
+        guard var editor = replyEditors[threadID] else { return }
+        editor.body = body
+        replyEditors[threadID] = editor
+    }
+
+    func cancelReply(threadID: String) {
+        replyEditors[threadID] = nil
+    }
+
+    func sendReply(threadID: String) {
+        guard var editor = replyEditors[threadID] else { return }
+        let body = editor.body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !body.isEmpty else { return }
+
+        if demoSession {
+            if let index = session.threads.firstIndex(where: { $0.id == threadID }) {
+                var session = session
+                session.threads[index].comments.append(
+                    PRComment(databaseId: 9999, author: "you", body: body, createdAt: Date())
+                )
+                self.session = session
+            }
+            replyEditors[threadID] = nil
+            banner = SessionBanner(text: "Demo: reply added locally.")
+            return
+        }
+        guard let endpoint = session.endpoint else { return }
+        let operations = ReviewOperations(service: service, persistence: persistence)
+
+        replyEditors[threadID] = ReplyEditorState(threadID: editor.threadID, commentID: editor.commentID, body: editor.body, retryFailed: true)
+        editor.retryFailed = true
+        replyEditors[threadID] = editor
+        Task { [weak self] in
+            do {
+                try await operations.reply(endpoint: endpoint, commentID: editor.commentID, body: body)
+                self?.replyEditors[threadID] = nil
+                self?.refresh()
+            } catch {
+                guard let self else { return }
+                self.replyEditors[threadID] = ReplyEditorState(
+                    threadID: editor.threadID, commentID: editor.commentID,
+                    body: editor.body, retryFailed: true
+                )
+                self.banner = SessionBanner(text: "Reply failed: \(error)", isError: true)
+            }
+        }
+    }
+
+    // MARK: - Submit
+
+    func beginSubmit() {
+        submitEvent = .comment
+        submitBody = ""
+        submitValidationMessage = nil
+        submitState = .editing
+    }
+
+    func cancelSubmit() {
+        if case .submitting = submitState {
+            // Cancelling an in-flight submission leaves the remote result
+            // uncertain: retain drafts and show the uncertain state.
+            submitTask?.cancel()
+            submitState = .uncertain(message: "Submission was interrupted. Verify on GitHub before retrying.")
+        } else {
+            submitState = .hidden
+            submitValidationMessage = nil
+        }
+    }
+
+    func submitReview() {
+        guard case .editing = submitState else { return }
+        let event = submitEvent
+        let body = submitBody.trimmingCharacters(in: .whitespacesAndNewlines)
+        let submittable = session.drafts.filter { !$0.isOrphaned }
+        if event == .approve && body.isEmpty && !submittable.isEmpty {
+            submitValidationMessage = "Approvals with inline comments usually include a summary."
+            return
+        }
+        submitValidationMessage = nil
+        submitState = .submitting
+
+        if demoSession {
+            var session = session
+            session.drafts.removeAll { !$0.isOrphaned }
+            self.session = session
+            submitState = .hidden
+            banner = SessionBanner(text: "Demo mode — review not submitted.")
+            return
+        }
+        guard let endpoint = session.endpoint else {
+            submitState = .failed(message: "Not connected to GitHub.")
+            return
+        }
+        let headSHA = session.headSHA
+        let operations = ReviewOperations(service: service, persistence: persistence)
+        let task = Task { [weak self] in
+            do {
+                let result = try await operations.submit(
+                    endpoint: endpoint, headSHA: headSHA, body: body, event: event, drafts: submittable
+                )
+                guard let self else { return }
+                let submitted = result.submitted.drafts
+                var session = self.session
+                session.drafts.removeAll { submitted.contains($0) }
+                self.session = session
+                self.submitState = .hidden
+                self.banner = SessionBanner(text: "Review submitted.")
+                self.persistDrafts()
+                self.refresh()
+            } catch is CancellationError {
+                guard let self else { return }
+                // Cancellation after dispatch: the remote result is uncertain.
+                self.submitState = .uncertain(message: "Submission was interrupted. Verify on GitHub before retrying.")
+            } catch {
+                guard let self else { return }
+                self.submitState = .failed(message: "Submit failed: \(error)")
+            }
+        }
+        submitTask = task
+    }
+
+    // MARK: - Refresh (with selection preservation)
+
+    /// Refreshes via the shared migration path, preserving the selected path.
+    func refresh() {
+        guard let endpoint = session.endpoint, !demoSession else {
+            banner = SessionBanner(text: "Demo mode — nothing to refresh.")
+            return
+        }
+        refreshGeneration += 1
+        let generation = refreshGeneration
+        refreshTask?.cancel()
+
+        let snapshot = session
+        let anchorPath = selection.filePath
+        let operations = ReviewOperations(service: service, persistence: persistence)
+        isBusy = true
+        let task = Task { [weak self] in
+            do {
+                guard let self else { return }
+                let bundle = try await self.service.fetchAll(endpoint)
+                let result = try await operations.migrate(
+                    bundle: bundle, endpoint: endpoint,
+                    current: ReviewLocalState(
+                        headSHA: snapshot.headSHA, drafts: snapshot.drafts, viewed: snapshot.viewed
+                    )
+                )
+                try Task.checkCancellation()
+                guard generation == self.refreshGeneration else { return }
+                var session = self.session
+                session.pr = result.bundle.pr
+                session.files = result.bundle.files
+                session.threads = result.bundle.threads
+                session.drafts = result.localState.drafts
+                session.viewed = result.localState.viewed
+                session.headSHA = result.bundle.pr.headRefOid
+                self.session = session
+                // Preserve selection by path; rowID resets (anchor restoration is Phase 9).
+                let kept = anchorPath.map { path in
+                    result.bundle.files.contains { $0.path == path } ? path : nil
+                } ?? nil
+                self.selection = ReviewSelection(filePath: kept ?? result.bundle.files.first?.path)
+                self.banner = SessionBanner(text: result.message)
+                self.isBusy = false
+            } catch is CancellationError {
+                // superseded or cancelled
+            } catch {
+                guard let self, generation == self.refreshGeneration else { return }
+                self.banner = SessionBanner(text: "Refresh failed: \(error)", isError: true)
+                self.isBusy = false
+            }
+        }
+        refreshTask = task
+    }
+
+    // MARK: - Clipboard / browser
+
+    /// Copies the exact `path:line content` text for a line row.
+    func copyLineToClipboard(file: DiffFile, hunkIndex: Int, lineIndex: Int) -> Bool {
+        guard let line = file.line(at: hunkIndex, lineIndex) else { return false }
+        let text = ReviewUtilities.clipboardText(path: file.path, line: line)
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+        banner = SessionBanner(text: "Copied \(file.path):\(line.newLine ?? line.oldLine ?? 0)")
+        return true
+    }
+
+    /// Opens the PR in the default browser.
+    func openInBrowser() {
+        let url = ReviewUtilities.pullRequestURL(session.pr?.url)
+        if demoSession || url == nil {
+            banner = SessionBanner(text: demoSession ? "Demo mode — no PR URL to open." : "No PR URL available.", isError: true)
+            return
+        }
+        NSWorkspace.shared.open(url!)
+    }
+}
+
+// MARK: - Selection helpers
+
+public extension ReviewSessionStore {
+    /// Resolves a line row ID back to its (hunk, lineIndex) position in the
+    /// given file by matching kind + old/new anchors.
+    func linePosition(for rowID: DiffRowID?, in file: DiffFile) -> (hunk: Int, lineIndex: Int)? {
+        guard let rowID, case DiffRowID.line(_, let hunk, let kind, let old, let new) = rowID else {
+            return nil
+        }
+        guard hunk < file.hunks.count else { return nil }
+        let lines = file.hunks[hunk].lines
+        for (idx, l) in lines.enumerated()
+        where l.kind == kind && l.oldLine == old && l.newLine == new {
+            return (hunk, idx)
+        }
+        return nil
+    }
+
+    /// The selected diff line position, if the selection is a diff line.
+    func selectedLinePosition(in file: DiffFile) -> (hunk: Int, lineIndex: Int)? {
+        linePosition(for: selection.rowID, in: file)
+    }
+}
+
+// MARK: - Phase 7: commands, navigation, escape
+
+public extension ReviewSessionStore {
+
+    /// Builds the pure command context for the current store state.
+    func commandContext() -> ReviewCommandContext {
+        let loaded = state == .loaded
+        var commentable = false
+        var threadIsActive = false
+        var threadHasRoot = false
+        if loaded, let file = selectedFile, let position = selectedLinePosition(in: file) {
+            commentable = DraftRangeValidator.anchor(for: file, hunkIndex: position.hunk, lineIndex: position.lineIndex) != nil
+        }
+        if loaded, case .thread(let threadID)? = selection.rowID,
+           let thread = review?.threads.first(where: { $0.id == threadID }) {
+            threadIsActive = !thread.isOutdated
+            threadHasRoot = thread.rootCommentID != nil
+        }
+        return ReviewCommandContext(
+            state: state, isDemo: demoSession,
+            hasSelectedFile: selection.filePath != nil,
+            hasCommentableSelection: commentable,
+            selectedThreadIsActive: threadIsActive,
+            selectedThreadHasRootComment: threadHasRoot,
+            canUndo: canUndo, canRedo: canRedo,
+            draftEditorOpen: draftEditor != nil,
+            submitHidden: submitState == .hidden,
+            isSubmitting: submitState == .submitting,
+            canSubmit: true,   // body-only reviews are valid; availability gates on .loaded
+            hasPRURL: ReviewUtilities.pullRequestURL(session.pr?.url) != nil
+        )
+    }
+
+    // MARK: - Diff navigation
+
+    /// Ordered row IDs of commentable diff lines in the selected file.
+    func commentableLineIDs(in file: DiffFile) -> [DiffRowID] {
+        file.hunks.enumerated().flatMap { hunkIndex, hunk in
+            hunk.lines.enumerated().compactMap { lineIndex, line in
+                guard let anchor = DraftRangeValidator.anchor(for: file, hunkIndex: hunkIndex, lineIndex: lineIndex) else {
+                    return nil
+                }
+                return DiffRowID.line(
+                    file: file.path, hunk: hunkIndex, kind: line.kind,
+                    old: line.oldLine, new: line.newLine
+                )
+            }
+        }
+    }
+
+    /// Moves the line selection by delta among commentable lines.
+    func moveLineSelection(_ delta: Int, in file: DiffFile) {
+        let ids = commentableLineIDs(in: file)
+        guard !ids.isEmpty else { return }
+        let currentIndex = selection.rowID.flatMap { ids.firstIndex(of: $0) }
+        let next = min(max(0, (currentIndex ?? (delta > 0 ? -1 : ids.count)) + delta), ids.count - 1)
+        selection.rowID = ids[next]
+    }
+
+    func selectPreviousFile() {
+        selectAdjacentFile(-1)
+    }
+
+    func selectNextFile() {
+        selectAdjacentFile(1)
+    }
+
+    private func selectAdjacentFile(_ delta: Int) {
+        guard let review, !review.files.isEmpty else { return }
+        let current = selection.filePath ?? review.files.first?.path
+        let index = review.files.firstIndex { $0.path == current } ?? 0
+        let next = min(max(0, index + delta), review.files.count - 1)
+        select(filePath: review.files[next].path)
+        selection.rowID = nil
+    }
+
+    /// Selects the adjacent hunk header row in the current file.
+    func selectAdjacentHunk(_ delta: Int, in file: DiffFile) {
+        let rows = review?.diffRows(for: file) ?? []
+        let hunkIDs = rows.compactMap { row -> DiffRowID? in
+            if case .hunk = row.id { return row.id }
+            return nil
+        }
+        guard !hunkIDs.isEmpty else { return }
+        let currentIndex = selection.rowID.flatMap { hunkIDs.firstIndex(of: $0) }
+        let next = min(max(0, (currentIndex ?? (delta > 0 ? -1 : hunkIDs.count)) + delta), hunkIDs.count - 1)
+        selection.rowID = hunkIDs[next]
+    }
+
+    // MARK: - Escape precedence
+
+    /// Cancels the most relevant transient interaction: draft editor, reply
+    /// editor, submit sheet (retaining uncertain behavior for in-flight
+    /// submissions), loading, then the banner.
+    func cancelTransientInteraction() {
+        if draftEditor != nil {
+            cancelDraftEditor()
+            return
+        }
+        if !replyEditors.isEmpty {
+            replyEditors = [:]
+            return
+        }
+        if submitState != .hidden {
+            cancelSubmit()
+            return
+        }
+        if case .loading = state {
+            cancelLoad()
+            return
+        }
+        banner = nil
+    }
+}
+
+/// Clear draft history after a completed load (undo must not cross reviews).
+public extension ReviewSessionStore {
+    func clearDraftHistory() {
+        undoStack.removeAll()
+        redoStack.removeAll()
+    }
+}
+
+// MARK: - Phase 8: dependency health
+
+public extension ReviewSessionStore {
+
+    /// Dependency health (published for the status UI).
+    var dependencyStatus: GitHubDependencyStatus? {
+        get { _dependencyStatus }
+        set { _dependencyStatus = newValue }
+    }
+
+    /// Starts a nonblocking health check for a real window store.
+    func startDependencyCheckIfNeeded() {
+        guard !didStartDependencyCheck, !demoSession, !suppressDependencyCheck else { return }
+        didStartDependencyCheck = true
+        recheckDependency()
+    }
+
+    /// Re-runs the health check with the current executable preference.
+    /// Superseded checks never publish (generation guard). A fresh resolver is
+    /// built per check so preference changes take effect immediately.
+    func recheckDependency() {
+        dependencyGeneration += 1
+        let generation = dependencyGeneration
+        isCheckingDependency = true
+        let resolver = GitHubExecutableResolver(overrideURL: preference.selectedExecutableURL)
+        let runner = dependencyRunner ?? SystemCommandRunner(resolver: resolver)
+        let checker = GitHubDependencyChecker(runner: runner, resolver: resolver)
+        Task { [weak self] in
+            let status = await checker.check()
+            guard let self, generation == self.dependencyGeneration else { return }
+            self.isCheckingDependency = false
+            self._dependencyStatus = status
+        }
+    }
+
+    // MARK: - Preference actions
+
+    var selectedExecutableURL: URL? { preference.selectedExecutableURL }
+
+    /// Validates and persists a user-selected executable, then rechecks.
+    func setSelectedExecutable(_ url: URL) {
+        if preference.setSelectedExecutableURL(url) {
+            recheckDependency()
+        } else {
+            _dependencyStatus = GitHubDependencyStatus(
+                state: .unusable, executableURL: url,
+                message: "The selected file is not an executable."
+            )
+        }
+    }
+
+    func clearSelectedExecutable() {
+        preference.clearSelectedExecutableURL()
+        recheckDependency()
+    }
+
+    /// Copyable guidance for the current status (never runs a shell).
+    var dependencyInstruction: String? {
+        switch dependencyStatus?.state {
+        case .missing:
+            return "brew install gh"
+        case .unauthenticated, .expiredOrRevoked:
+            return "gh auth login"
+        case .underScoped:
+            return "gh auth refresh -h github.com -s repo"
+        default:
+            return nil
+        }
+    }
+}
