@@ -4,11 +4,10 @@ A native macOS app for reviewing GitHub pull requests. Read the diff, comment
 on lines, reply to threads, resolve, approve or request changes, all anchored
 to the authenticated `gh` CLI.
 
-> **Status**: the desktop app is implemented end-to-end (Phases 1–10 of
-> [DESKTOP_UI_MIGRATION_PLAN.md](DESKTOP_UI_MIGRATION_PLAN.md)). The original
-> terminal UI has been removed. Remaining release gates (Developer ID signing,
+> **Status**: the desktop app is implemented end-to-end. The original terminal
+> UI has been removed. Remaining release gates (Developer ID signing,
 > notarization, clean-account Finder testing, and actual macOS 13 testing) are
-> external and tracked in the plan checklist.
+> external.
 
 ## Desktop app
 
@@ -134,11 +133,11 @@ swift test   # 145 unit tests: diff parser, word diff, highlighter, row/payload
              # desktop store/workflows/commands, launcher + URL handling
 ```
 
-`PRReviewAppUITests` (demo-mode UI tests) are scaffolded in the Xcode project;
-full UI-test execution is recorded as manual/pending until a maintained
-interactive runner exists. `PRReviewBench` (release mode) generates 10k/50k/100k
-line synthetic diffs and measures the large-diff acceptance targets — see
-[`docs/phase4-technology-spike.md`](docs/phase4-technology-spike.md).
+`PRReviewAppUITests` (demo-mode UI tests) cover app launch, the welcome button,
+sidebar search/filter, the toolbar comment flow, and the submit sheet + banner;
+run them with `xcodebuild test -project PRReview.xcodeproj -scheme PRReviewApp`.
+`PRReviewBench` (release mode) generates 10k/50k/100k line synthetic diffs and
+measures the large-diff acceptance targets.
 
 ## Project layout
 
@@ -154,7 +153,6 @@ PRReview.xcodeproj/     Xcode project (xcodegen project.yml)
 Tests/
   PRReviewKitTests/     core unit tests
   PRReviewDesktopTests/ desktop store/workflow/command unit tests
-docs/                   parity matrix, technology spike, phase-4 results
 ```
 
 ## License
