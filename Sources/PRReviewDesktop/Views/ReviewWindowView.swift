@@ -102,6 +102,7 @@ public struct ReviewWindowView: View {
                     Label("Submit Review", systemImage: "paperplane")
                 }
                 .disabled(!availability.canSubmit)
+                .help("Submit the review")
                 .accessibilityIdentifier("toolbar-submit")
                 Button {
                     store.refresh()
@@ -109,6 +110,7 @@ public struct ReviewWindowView: View {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
                 .disabled(!availability.canRefresh)
+                .help("Refresh the review")
                 .accessibilityIdentifier("toolbar-refresh")
                 Button {
                     if let file = store.selectedFile, let position = store.selectedLinePosition(in: file),
@@ -124,6 +126,7 @@ public struct ReviewWindowView: View {
                     Label("Comment", systemImage: "bubble.left")
                 }
                 .disabled(!availability.canAddComment)
+                .help("Comment on the selected line")
                 .accessibilityIdentifier("toolbar-comment")
                 Button {
                     store.toggleViewed(filePath: store.selection.filePath ?? "")
@@ -131,6 +134,7 @@ public struct ReviewWindowView: View {
                     Label("Toggle Viewed", systemImage: "checkmark.circle")
                 }
                 .disabled(!availability.canToggleViewed)
+                .help("Toggle viewed state")
                 .accessibilityIdentifier("toolbar-viewed")
                 Button {
                     if let file = store.selectedFile, let position = store.selectedLinePosition(in: file) {
@@ -140,6 +144,7 @@ public struct ReviewWindowView: View {
                     Label("Copy Line", systemImage: "doc.on.doc")
                 }
                 .disabled(!availability.canCopyLine)
+                .help("Copy the selected line")
                 .accessibilityIdentifier("toolbar-copy")
                 Button {
                     store.openInBrowser()
@@ -147,6 +152,7 @@ public struct ReviewWindowView: View {
                     Label("Open in Browser", systemImage: "safari")
                 }
                 .disabled(!availability.canOpenInBrowser)
+                .help("Open the PR in your browser")
                 .accessibilityIdentifier("toolbar-browser")
             }
         }
