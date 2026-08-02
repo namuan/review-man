@@ -40,11 +40,15 @@ public struct DiffView: View {
     private var diffScroll: some View {
         let rows = displayRows()
         // The horizontal ScrollView proposes unbounded width to its content, so
-        // the LazyVStack (and every row) would collapse to intrinsic width —
-        // leaving a narrow strip of diff on the left and empty space on the
-        // right. Measuring the pane and giving the stack a minimum width makes
-        // rows stretch to fill the pane; lines longer than the pane still push
-        // the stack wider and scroll horizontally.
+        // rows collapse to intrinsic width — leaving a narrow strip of diff on
+        // the left and empty space on the right. Each row gets a minimum width
+        // of the pane so rows stretch to fill it; lines longer than the pane
+        // still push the content wider and scroll horizontally.
+        //
+        // The minWidth is applied per-row (NOT on the LazyVStack): a minWidth
+        // frame around the stack itself is vertically centered by its alignment
+        // and fills the proposed height, leaving a large blank band above the
+        // first row.
         return GeometryReader { geo in
             ScrollViewReader { proxy in
                 ScrollView(.vertical) {
@@ -52,10 +56,10 @@ public struct DiffView: View {
                         LazyVStack(alignment: .leading, spacing: 0) {
                             ForEach(rows) { displayRow in
                                 DiffRowView(store: store, file: file, displayRow: displayRow)
+                                    .frame(minWidth: geo.size.width, alignment: .leading)
                                     .id(displayRow.id)
                             }
                         }
-                        .frame(minWidth: geo.size.width, alignment: .leading)
                     }
                 }
                 .onMoveCommand { direction in
