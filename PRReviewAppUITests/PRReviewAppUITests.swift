@@ -20,7 +20,7 @@ final class PRReviewAppUITests: XCTestCase {
     func testOpenDemoViaLaunchArgument() {
         let app = launchDemo()
         XCTAssertTrue(app.descendants(matching: .any)["pr-header"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.otherElements["file-sidebar"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["file-sidebar"].exists)
     }
 
     func testOpenDemoViaWelcomeButton() {
@@ -39,7 +39,7 @@ final class PRReviewAppUITests: XCTestCase {
         XCTAssertTrue(searchField.waitForExistence(timeout: 10))
         searchField.click()
         searchField.typeText("README")
-        XCTAssertTrue(app.otherElements["sidebar-row-README.md"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["sidebar-row-README.md"].waitForExistence(timeout: 5))
     }
 
     func testAddDraftViaToolbarComment() {
@@ -63,6 +63,6 @@ final class PRReviewAppUITests: XCTestCase {
         XCTAssertTrue(app.textViews["submit-body-editor"].waitForExistence(timeout: 5))
         app.buttons["submit-button"].click()
         // In demo mode the review is not submitted; a nonmodal banner appears.
-        XCTAssertTrue(app.otherElements["status-banner"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["status-banner"].waitForExistence(timeout: 5))
     }
 }
