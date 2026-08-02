@@ -25,10 +25,15 @@ public struct DiffLineView: View {
         let palette = SemanticTheme.palette(
             for: colorScheme, increasedContrast: AppearanceSettings.increasedContrast
         )
-        let gutterWidth = CGFloat(file.gutterDigits * 2 + 3)
+        let gutter = DiffAttributedStringBuilder.gutterText(for: diffLine, digits: file.gutterDigits)
+        // The gutter text is `digits*2 + 3` characters; SF Mono's advance at
+        // 12pt is ~0.6 × point size. The width MUST be in points — the old
+        // `digits * 2 + 3` value was treated as points while the string is
+        // that many *characters*, so the monospace gutter wrapped vertically
+        // and inflated every row to ~45px.
+        let gutterWidth = CGFloat(gutter.count) * 7.2
         let background = kindBackground(diffLine.kind, palette: palette)
 
-        let gutter = DiffAttributedStringBuilder.gutterText(for: diffLine, digits: file.gutterDigits)
         // Request tokens only when this line is actually realized (viewport-driven).
         let tokens = store.tokenCache.tokens(for: diffLine.content, language: Highlighter.language(for: file.path))
         let content = DiffAttributedStringBuilder.build(line: diffLine, tokens: tokens, palette: palette)
@@ -38,6 +43,7 @@ public struct DiffLineView: View {
                 Text(gutter)
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundStyle(palette.gutterForeground)
+                    .lineLimit(1)
                     .frame(width: gutterWidth, alignment: .trailing)
                     .padding(.leading, 6)
                     .background(palette.gutterBackground.opacity(0.5))
@@ -47,8 +53,11 @@ public struct DiffLineView: View {
                     .padding(.horizontal, 8)
                 Spacer(minLength: 0)
             }
-            .background(selectionOrHoverBackground(for: diffLine))
+            // Order matters: frame first so the background (and the hover /
+            // selection overlay) spans the full row width like GitHub's diff,
+            // not just the text's intrinsic width.
             .frame(maxWidth: .infinity, alignment: .leading)
+            .background(selectionOrHoverBackground(for: diffLine))
             .contentShape(Rectangle())
             .onTapGesture { handleTap(hunkIndex: hunkIndex, lineIndex: lineIndex) }
             .onHover { hovering in

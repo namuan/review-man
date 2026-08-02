@@ -39,19 +39,28 @@ public struct DiffView: View {
 
     private var diffScroll: some View {
         let rows = displayRows()
-        return ScrollViewReader { proxy in
-            ScrollView(.vertical) {
-                ScrollView(.horizontal) {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(rows) { displayRow in
-                            DiffRowView(store: store, file: file, displayRow: displayRow)
-                                .id(displayRow.id)
+        // The horizontal ScrollView proposes unbounded width to its content, so
+        // the LazyVStack (and every row) would collapse to intrinsic width —
+        // leaving a narrow strip of diff on the left and empty space on the
+        // right. Measuring the pane and giving the stack a minimum width makes
+        // rows stretch to fill the pane; lines longer than the pane still push
+        // the stack wider and scroll horizontally.
+        return GeometryReader { geo in
+            ScrollViewReader { proxy in
+                ScrollView(.vertical) {
+                    ScrollView(.horizontal) {
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(rows) { displayRow in
+                                DiffRowView(store: store, file: file, displayRow: displayRow)
+                                    .id(displayRow.id)
+                            }
                         }
+                        .frame(minWidth: geo.size.width, alignment: .leading)
                     }
                 }
-            }
-            .onMoveCommand { direction in
-                handleMoveCommand(direction, proxy: proxy)
+                .onMoveCommand { direction in
+                    handleMoveCommand(direction, proxy: proxy)
+                }
             }
         }
         .accessibilityIdentifier("diff-pane")
