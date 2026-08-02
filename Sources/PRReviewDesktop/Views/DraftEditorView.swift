@@ -85,6 +85,7 @@ public struct SubmitReviewView: View {
                 }
             }
             .pickerStyle(.segmented)
+            .labelsHidden()
 
             Text("Summary")
                 .font(.caption)
