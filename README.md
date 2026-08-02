@@ -4,6 +4,8 @@ A native macOS app for reviewing GitHub pull requests. Read the diff, comment
 on lines, reply to threads, resolve, approve or request changes, all anchored
 to the authenticated `gh` CLI.
 
+![PR Review](assets/image.jpg)
+
 > **Status**: the desktop app is implemented end-to-end. The original terminal
 > UI has been removed. Remaining release gates (Developer ID signing,
 > notarization, clean-account Finder testing, and actual macOS 13 testing) are
