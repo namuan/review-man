@@ -229,7 +229,7 @@ final class DependencyHealthTests: XCTestCase {
 
 final class DependencyHealthExtraTests: XCTestCase {
 
-    private let info = GitHubExecutableInfo(url: URL(fileURLWithPath: "/usr/local/bin/gh"), source: .intelHomebrew)
+    private let info = GitHubExecutableInfo(url: URL(fileURLWithPath: "/opt/homebrew/bin/gh"), source: .appleSiliconHomebrew)
 
     /// A classic token whose reported scopes lack `repo` is classified
     /// under-scoped (definitive evidence).
@@ -295,7 +295,7 @@ final class DependencyHealthExtraTests: XCTestCase {
 
 final class DependencyHealthHeaderTests: XCTestCase {
 
-    private let info = GitHubExecutableInfo(url: URL(fileURLWithPath: "/usr/local/bin/gh"), source: .intelHomebrew)
+    private let info = GitHubExecutableInfo(url: URL(fileURLWithPath: "/opt/homebrew/bin/gh"), source: .appleSiliconHomebrew)
 
     /// Headers on stdout (before the JSON body) must not break login parsing.
     func testHeadersOnStdoutDoNotBreakLoginParsing() async {

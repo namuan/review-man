@@ -4,6 +4,31 @@ import Foundation
 /// offline (`pr-review --demo`). The diff and threads are deliberately small
 /// but realistic. Note: context lines start with one leading space; added
 /// lines start with '+'; no trailing-whitespace-only lines are used.
+public struct DemoBundle {
+    public let endpoint: PREndpoint
+    public let pr: PRInfo
+    public let files: [DiffFile]
+    public let threads: [PRThread]
+    public let drafts: [DraftComment]
+    public let viewed: Set<String>
+
+    public init(
+        endpoint: PREndpoint,
+        pr: PRInfo,
+        files: [DiffFile],
+        threads: [PRThread],
+        drafts: [DraftComment],
+        viewed: Set<String>
+    ) {
+        self.endpoint = endpoint
+        self.pr = pr
+        self.files = files
+        self.threads = threads
+        self.drafts = drafts
+        self.viewed = viewed
+    }
+}
+
 public enum DemoData {
 
     public static let sampleDiff = """
@@ -64,34 +89,31 @@ public enum DemoData {
      Keep it simple.
     """
 
-    public static func makeDemoModel() -> AppModel {
-        let model = AppModel()
-        model.isDemo = true
-        model.endpoint = PREndpoint(owner: "octocat", repo: "demo-repo", number: 482)
-        model.pr = PRInfo(
-            number: 482,
-            title: "Add terminal UI skeleton for PR review",
-            body: "Implements the raw-mode terminal layer, a diff parser and a demo\nmode so reviewers can iterate without network access.",
-            author: "octocat",
-            state: "OPEN",
-            isDraft: false,
-            headRefOid: "0123456789abcdef",
-            headRefName: "tui-skeleton",
-            baseRefName: "main",
-            additions: 25,
-            deletions: 6,
-            changedFiles: 4,
-            reviewDecision: "CHANGES_REQUESTED",
-            url: "https://github.com/octocat/demo-repo/pull/482"
+    /// The offline demo PR, returned as plain data (no app model).
+    public static func makeDemoBundle() -> DemoBundle {
+        DemoBundle(
+            endpoint: PREndpoint(owner: "octocat", repo: "demo-repo", number: 482),
+            pr: PRInfo(
+                number: 482,
+                title: "Add terminal UI skeleton for PR review",
+                body: "Implements the raw-mode terminal layer, a diff parser and a demo\nmode so reviewers can iterate without network access.",
+                author: "octocat",
+                state: "OPEN",
+                isDraft: false,
+                headRefOid: "0123456789abcdef",
+                headRefName: "tui-skeleton",
+                baseRefName: "main",
+                additions: 25,
+                deletions: 6,
+                changedFiles: 4,
+                reviewDecision: "CHANGES_REQUESTED",
+                url: "https://github.com/octocat/demo-repo/pull/482"
+            ),
+            files: DiffParser.parse(sampleDiff),
+            threads: sampleThreads,
+            drafts: [],
+            viewed: ["README.md"]
         )
-        model.headOID = model.pr?.headRefOid ?? ""
-        model.files = DiffParser.parse(sampleDiff)
-        model.threads = sampleThreads
-        model.drafts = []
-        model.viewed = ["README.md"]
-        model.rebuildRows()
-        model.loaded = true
-        return model
     }
 
     static let sampleThreads: [PRThread] = {

@@ -113,7 +113,8 @@ public struct ReviewPresentation {
                 file: file, threads: threads, drafts: drafts, outdatedExpanded: true
             )
         }
-        // Pathless orphans surface on the last file (mirrors AppModel).
+        // Pathless orphans surface on the last file so they stay visible and
+        // deletable even when their path vanished from the diff.
         let pathless = drafts.filter { $0.isOrphaned && !knownPaths.contains($0.path) }
         if !pathless.isEmpty, let lastPath = files.last?.path, var lastRows = rows[lastPath] {
             if !lastRows.contains(.orphanedHeader) {

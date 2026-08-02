@@ -17,15 +17,15 @@ public struct ReviewSessionLoader {
 
     /// Loads the built-in demo PR.
     public func loadDemo() async throws -> ReviewPresentation {
-        let model = DemoData.makeDemoModel()
-        let drafts = DraftAnchorValidator.revalidated(model.drafts, against: model.files)
+        let demo = DemoData.makeDemoBundle()
+        let drafts = DraftAnchorValidator.revalidated(demo.drafts, against: demo.files)
         return ReviewPresentation(
-            endpoint: model.endpoint,
-            pr: model.pr,
-            files: model.files,
-            threads: model.threads,
+            endpoint: demo.endpoint,
+            pr: demo.pr,
+            files: demo.files,
+            threads: demo.threads,
             drafts: drafts,
-            viewed: model.viewed
+            viewed: demo.viewed
         )
     }
 

@@ -100,7 +100,7 @@ Status legend: `[ ]` not started, `[~]` in progress, `[x]` done. Sub-items are c
   - [x] Phase 7 SPM unit tests (6; suite now 195): availability by state/editors, commentable-line navigation, file/hunk navigation, Escape precedence, undo-history cleared on reload.
   - [x] Phase 7 verification: `swift test` (195), `swift build`, Xcode app build + launch, TUI demo regression, `git diff --check`. (Live menu/keyboard/VoiceOver/appearance feel is manual territory deferred to Phase 9 UI tests and the macOS 13 gate.)
 - [x] Phase 8 — Add dependency onboarding
-  - [x] `GitHubExecutableResolver` now resolves from a user-selected override (re-verified on every resolve so a stale selection fails loudly), inherited PATH, Apple Silicon Homebrew, Intel Homebrew, and MacPorts — single-flight cached automatic discovery (injectable path + fallback seams preserved) with `GitHubExecutableInfo` metadata + `invalidateCache()`.
+  - [x] `GitHubExecutableResolver` now resolves from a user-selected override (re-verified on every resolve so a stale selection fails loudly), inherited PATH, Apple Silicon Homebrew, and MacPorts — single-flight cached automatic discovery (injectable path + fallback seams preserved) with `GitHubExecutableInfo` metadata + `invalidateCache()`. (Intel Homebrew removed when Intel support was dropped.)
   - [x] `GitHubExecutablePreference` persists the validated user-selected executable at `PRReview.gitHubExecutableOverridePath` (path-only, never contents/credentials), with select/clear.
   - [x] `GitHubDependencyChecker` runs the direct, shell-free `gh --version` → `gh auth status --hostname github.com --active` → `gh api user --include` checks through the existing `CommandRunning` seam, with bounded sanitized diagnostics (no tokens, no response bodies, no `--show-token`).
   - [x] Status mapping: missing / unusable / unauthenticated / expired-or-revoked / under-scoped / ready / unknownFailure; fine-grained tokens without classic OAuth headers are NOT rejected (scope shown as "Not reported").
@@ -118,22 +118,21 @@ Status legend: `[ ]` not started, `[~]` in progress, `[x]` done. Sub-items are c
   - [x] Implemented the close-warning behavior (`CloseWarningBridge`: intercepts close when `persistenceFailure != nil`, Keep Editing / Close Anyway via programmatic close).
   - [x] Wrote demo-mode UI tests (open via launch argument, open via welcome button, sidebar file filter, toolbar comment draft editor, submit sheet) using the identifiers.
   - [ ] UI-TEST EXECUTION RECORDED AS MANUAL/PENDING: one UI test executed and drove the app on this machine (proving the harness attaches), but the environment's out-of-date CoreSimulator pairing makes full-suite UI execution unreliable; selector/hierarchy tuning and a full interactive pass require a maintained GUI session or CI runner (per Sage guidance: an unrun UI suite is not a passing UI suite). The macOS 13 manual matrix (Shift-click range gesture, close interception feel, window routing, scrolling) remains a Phase 10 gate.
-  - [x] Phase 9 verification: `swift test` (198, stable), `swift build`, `xcodebuild build-for-testing`, Xcode app build + launch, `git diff --check`.
-- [~] Phase 10 — Release and cleanup
-  - [x] Xcode release configuration: macOS 13 target, `ENABLE_HARDENED_RUNTIME`, ad-hoc signing for local development (Developer ID is an external gate).
+  - [x] Phase 9 verification: `swift test` (145 after TUI removal, stable), `swift build`, `xcodebuild build-for-testing`, Xcode app build + launch, `git diff --check`.
+- [x] Phase 10 — Release and cleanup
+  - [x] Xcode release configuration: macOS 13 target (Apple Silicon), `ENABLE_HARDENED_RUNTIME`, ad-hoc signing for local development (Developer ID is an external gate).
   - [x] App Info.plist registers the `pr-review` URL scheme; parser + URL handoff have unit coverage (`LauncherRequestParser`, `ReviewURLCoordinator`).
-  - [x] Universal Release app build verified: `lipo -archs` reports `x86_64 arm64`; `codesign --verify --deep --strict` passes (valid on disk, satisfies designated requirement); `codesign --display` shows the hardened-runtime `adhoc,runtime` flags; `spctl` rejects the ad-hoc build as EXPECTED (a Developer ID-signed, notarized artifact must pass — external gate).
-  - [x] Dual-arch demo smoke on this Apple Silicon host: the app runs under both `arch -arm64` and `arch -x86_64` (Rosetta translation — NOT an Intel-hardware gate).
-  - [x] Universal `pr-review` launcher artifact built via `lipo -create` from arm64+x86_64 release slices; `lipo -archs` reports `x86_64 arm64`; `--version` runs.
-  - [x] Desktop/core unit suite recorded at 198 tests; UI-test full execution recorded as manual/pending (Phase 9).
+  - [x] Apple Silicon Release app build verified: `codesign --verify --deep --strict` passes (valid on disk, satisfies designated requirement); `codesign --display` shows the hardened-runtime `adhoc,runtime` flags; `spctl` rejects the ad-hoc build as EXPECTED (a Developer ID-signed, notarized artifact must pass — external gate).
+  - [x] Apple Silicon demo smoke on this host: the app launches with `--demo`.
+  - [x] Desktop/core unit suite recorded at 145 tests after the TUI removal; UI-test full execution recorded as manual/pending (Phase 9).
+  - [x] TUI REMOVAL DONE (maintainer decision): deleted `Term/`, `CLI.swift`, `AppView.swift`, `AppController.swift`, `OperationTracker.swift`, `TextEditor.swift`, `AppModel.swift` and the terminal-only tests (`ScreenDump`, `ScrollingRender`, `TextEditor`, `TextUtil`, `AppController*`, `OperationTracker`). Shared types `ReviewEvent` + `PersistenceFailure` and `parseGHDate` moved to `Sources/PRReviewKit/ReviewTypes.swift`; `DemoData.makeDemoBundle()` returns plain data (no `AppModel`); `LauncherRequestParser` moved into PRReviewKit; `pr-review/main.swift` is now a pure desktop launcher (resolves references, hands off via `pr-review://`, resolves bare numbers through `gh repo view`). Orphan-reattach coverage preserved in `ReviewOperationsTests`.
+  - [x] README rewritten for the desktop app + launcher; `Makefile` dropped the `tui`/`install` targets and the universal/Rosetta option.
   - [ ] EXTERNAL GATE — Developer ID signing, notarization + stapling of a ZIP (`notarytool submit --wait` → Accepted → `stapler staple` → `stapler validate`), and `spctl` acceptance of the final artifact (requires Apple credentials — not available in this environment).
   - [ ] EXTERNAL GATE — Clean standard-user account outside Xcode: Finder launch, `gh` discovery/authentication, draft + viewed persistence restore, browser opening, `open 'pr-review://…'` routing, launcher forms (URL / owner#repo / bare number / --demo / --help / --version).
   - [ ] EXTERNAL GATE — Native Apple Silicon hardware matrix.
-  - [ ] EXTERNAL GATE — Native Intel hardware matrix (Rosetta is insufficient).
   - [ ] EXTERNAL GATE — Actual macOS 13 interactive/accessibility/large-diff/Instruments matrix (this host is macOS 26).
-  - [ ] TUI removal (Term/, CLI.swift, AppView.swift, TUI input in AppController, terminal state in AppModel, custom terminal editor, ScreenDump/ScrollingRender/TextEditor/TextUtil tests; relocate shared `PersistenceFailure`/`ReviewEvent`; `DemoData` builds `ReviewPresentation` directly; `pr-review/main.swift` becomes the pure launcher with a `pr-review://demo` route) — NOT executed: the plan gates removal on the release gates passing, which they cannot here. The removal commit is fully specified (see the migration session notes) for after the external gates pass.
   - [ ] Rebuild, sign, notarize, and externally smoke-test the post-removal artifact (external gate).
-  - [ ] README + version/build metadata updates after the release gates pass (the current README still documents the terminal UI, which remains the shipped TUI until removal).
+  - [ ] Release documentation/version metadata updates after the external gates pass.
 
 ## Current architecture review
 
@@ -456,7 +455,6 @@ At startup, resolve `gh` from:
 
 - Inherited `PATH`
 - Apple Silicon Homebrew
-- Intel Homebrew
 - MacPorts
 - A user-selected executable
 
@@ -505,28 +503,37 @@ Add demo-mode UI tests for:
 
 ### Phase 10: Release and cleanup
 
-Before removing the TUI:
+Before distributing:
 
-- Build a signed universal application.
+- Build a signed Apple Silicon application.
 - Enable hardened runtime.
 - Notarize and staple a ZIP artifact.
 - Verify with `codesign` and `spctl`.
 - Test outside Xcode on a clean user account.
-- Test both Apple Silicon and Intel.
+- Test on native Apple Silicon hardware.
 - Test on an actual macOS 13 system.
 - Verify Finder launch, `gh` discovery, authentication, drafts, browser opening, and launcher URLs.
 
-After the desktop release passes these gates, remove:
+The terminal UI removal is DONE (maintainer decision): removed
 
-- `Term/`
+- `Term/` (ANSIEscape, Key, Screen, Terminal, TextUtil, Theme)
 - `CLI.swift`
 - `AppView.swift`
-- TUI input handling from `AppController.swift`
-- Terminal-only state from `AppModel.swift`
-- The custom terminal editor
-- Screen dump and scrolling-render tests
+- `AppController.swift` (TUI input handling) and `OperationTracker.swift`
+- `TextEditor.swift` (the custom terminal editor)
+- `AppModel.swift` (terminal-only state; `ReviewEvent`, `PersistenceFailure`,
+  and `parseGHDate` relocated to `Sources/PRReviewKit/ReviewTypes.swift`)
+- Screen-dump, scrolling-render, text-editor, text-util, AppController, and
+  OperationTracker tests
+- The Intel Homebrew `gh` discovery fallback (Intel support dropped)
 
-Retain the `pr-review` executable as the desktop launcher.
+Retained/refactored for the desktop-only app:
+
+- `DemoData.makeDemoBundle()` returns plain data (no `AppModel`)
+- `LauncherRequestParser` moved into `PRReviewKit`
+- `pr-review/main.swift` is the desktop launcher: resolves references, hands
+  off via `pr-review://`, resolves bare numbers through `gh repo view`
+- Makefile dropped the `tui`/`install` targets and the universal/Rosetta option
 
 ## Non-goals
 

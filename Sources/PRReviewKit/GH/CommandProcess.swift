@@ -12,7 +12,6 @@ public enum GitHubExecutableSource: Equatable, Sendable {
     case selected
     case inheritedPath
     case appleSiliconHomebrew
-    case intelHomebrew
     case macPorts
 }
 
@@ -33,15 +32,14 @@ public protocol GitHubExecutableInspecting {
 }
 
 /// Resolves `gh` from (in order): a user-selected override, the inherited
-/// `PATH`, Apple Silicon Homebrew, Intel Homebrew, and MacPorts. The first
-/// executable candidate is cached for the runner lifetime (single-flight);
+/// `PATH`, Apple Silicon Homebrew, and MacPorts. The first executable
+/// candidate is cached for the runner lifetime (single-flight);
 /// `invalidateCache()` forces a rescan (Re-check, preference changes).
 public final class GitHubExecutableResolver: GitHubExecutableResolving, GitHubExecutableInspecting {
 
     /// Fixed fallback locations probed after the inherited PATH.
     public static let fallbackDirectories: [(source: GitHubExecutableSource, path: String)] = [
         (.appleSiliconHomebrew, "/opt/homebrew/bin"),
-        (.intelHomebrew, "/usr/local/bin"),
         (.macPorts, "/opt/local/bin"),
     ]
 

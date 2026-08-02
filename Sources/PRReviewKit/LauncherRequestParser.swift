@@ -1,7 +1,6 @@
 import Foundation
-import PRReviewKit
 
-/// Pure launcher argument handling for the Phase 10 desktop launcher: parses
+/// Pure launcher argument handling for the desktop launcher: parses
 /// command-line references into a normalized `pr-review://` URL the app
 /// understands. Bare numbers are resolved against the terminal working
 /// directory by the caller and normalized here.

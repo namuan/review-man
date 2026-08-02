@@ -152,7 +152,6 @@ public struct DependencyStatusView: View {
         case .selected: return "user-selected"
         case .inheritedPath: return "PATH"
         case .appleSiliconHomebrew: return "Apple Silicon Homebrew"
-        case .intelHomebrew: return "Intel Homebrew"
         case .macPorts: return "MacPorts"
         }
     }

@@ -155,6 +155,61 @@ final class ReviewOperationsTests: XCTestCase {
         XCTAssertEqual(persistence.savedDraftCounts, [1], "only the old-head save happens; no new-head copy")
     }
 
+    /// A draft whose anchor vanishes across a head change becomes orphaned;
+    /// when the anchor returns on a later refresh it reattaches automatically.
+    func testOrphanReattachesWhenAnchorReturns() async throws {
+        let withoutNew2 = """
+        diff --git a/Src.swift b/Src.swift
+        --- a/Src.swift
+        +++ b/Src.swift
+        @@ -1,2 +1,1 @@
+         keep1
+        -old2
+        """
+        final class QueuedService: GitHubServing {
+            let bundles: [FetchBundle]
+            var index = 0
+            init(_ bundles: [FetchBundle]) { self.bundles = bundles }
+            func ensureAvailable() async throws {}
+            func resolveEndpoint(from argument: String) async throws -> PREndpoint {
+                PREndpoint(owner: "o", repo: "r", number: 1)
+            }
+            func fetchAll(_ ep: PREndpoint) async throws -> FetchBundle {
+                let bundle = bundles[min(index, bundles.count - 1)]
+                index += 1
+                return bundle
+            }
+            func submitReview(_ ep: PREndpoint, commitID: String, body: String, event: String, drafts: [DraftComment]) async throws {}
+            func replyToThread(_ ep: PREndpoint, commentID: Int, body: String) async throws {}
+            func resolveThread(_ ep: PREndpoint, threadID: String, resolved: Bool) async throws {}
+        }
+
+        let service = QueuedService([
+            FetchBundle(pr: makePRInfo(sha: "mid"), files: DiffParser.parse(withoutNew2), threads: []),
+            FetchBundle(pr: makePRInfo(sha: "new"), files: DiffParser.parse(sampleDiff), threads: []),
+        ])
+        let ops = ReviewOperations(service: service, persistence: MemoryPersistence())
+        let draft = DraftComment(path: "Src.swift", line: 2, side: "RIGHT", body: "note")
+
+        let orphaned = try await ops.refresh(
+            endpoint: ep,
+            current: ReviewLocalState(headSHA: "old", drafts: [draft], viewed: [])
+        )
+        XCTAssertEqual(orphaned.localState.drafts.first?.isOrphaned, true,
+                       "draft whose anchor left the diff is orphaned")
+
+        let reattached = try await ops.refresh(
+            endpoint: ep,
+            current: ReviewLocalState(
+                headSHA: "mid",
+                drafts: orphaned.localState.drafts,
+                viewed: orphaned.localState.viewed
+            )
+        )
+        XCTAssertEqual(reattached.localState.drafts.first?.isOrphaned, false,
+                       "anchor returned; draft reattached automatically")
+    }
+
     // MARK: - Submit
 
     func testSubmitSendsOnlyNonOrphanedDraftsAndReturnsSnapshot() async throws {
