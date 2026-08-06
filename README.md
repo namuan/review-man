@@ -13,9 +13,9 @@ to the authenticated `gh` CLI.
 
 ## Desktop app
 
-`PR Review.app` is a native SwiftUI application built from the `PRReview.xcodeproj`
-project (Apple Silicon). One resizable window per pull request, with multiple PRs
-in separate windows and no duplicates for the same repository + PR.
+`PR Review.app` is a native SwiftUI application built by Swift Package Manager
+(Apple Silicon). One resizable window per pull request, with multiple PRs in
+separate windows and no duplicates for the same repository + PR.
 
 - **Read the diff** with SF Mono, fixed line-number gutters, horizontal
   scrolling, syntax coloring, and word-level change highlighting.
@@ -41,24 +41,24 @@ in separate windows and no duplicates for the same repository + PR.
 ```sh
 git clone https://github.com/namuan/review-man.git
 cd review-man
-open PRReview.xcodeproj        # then run the PRReviewApp scheme
-```
-
-or build from the command line:
-
-```sh
-xcodegen generate
-xcodebuild -project PRReview.xcodeproj -scheme PRReviewApp -configuration Release build
-```
-
-or use the Makefile, which copies a directly-launchable app bundle to
-`build/PR Review.app`:
-
-```sh
-make app     # Debug build at build/PR Review.app
+make app     # debug build at build/PR Review.app
 make run     # build + launch
 make demo    # build + launch in offline demo mode
-make app CONFIG=Release   # Release build
+make app CONFIG=release   # release build
+```
+
+`make app` runs `swift build` and `scripts/build-app`, which assembles the
+`.app` bundle, Info.plist, and `.icns` icon. It does not invoke `xcodebuild` or
+`xcodegen`. To package without Make:
+
+```sh
+bash scripts/build-app release
+```
+
+To compile only the app executable (without a `.app` bundle):
+
+```sh
+swift build --configuration release --product PRReviewApp
 ```
 
 The app registers the `pr-review://` URL scheme. `open pr-review://open/owner/repo/123`
@@ -105,7 +105,7 @@ pr-review --version                                # version
 
 ## Requirements
 
-- macOS 13+ on Apple Silicon with Xcode (16+) and Swift 5.9+.
+- macOS 13+ on Apple Silicon with a Swift 5.9+ toolchain and the macOS SDK.
 - The [GitHub CLI](https://cli.github.com/) (`gh`) installed and authenticated:
   `brew install gh && gh auth login` (needs `repo` scope).
 
@@ -135,11 +135,10 @@ swift test   # 145 unit tests: diff parser, word diff, highlighter, row/payload
              # desktop store/workflows/commands, launcher + URL handling
 ```
 
-`PRReviewAppUITests` (demo-mode UI tests) cover app launch, the welcome button,
-sidebar search/filter, the toolbar comment flow, and the submit sheet + banner;
-run them with `xcodebuild test -project PRReview.xcodeproj -scheme PRReviewApp`.
-`PRReviewBench` (release mode) generates 10k/50k/100k line synthetic diffs and
-measures the large-diff acceptance targets.
+`PRReviewAppUITests` is an optional Xcode/XCTest UI-test harness for the
+packaged app; it is not part of the SwiftPM build or test path. `PRReviewBench`
+(release mode) generates 10k/50k/100k line synthetic diffs and measures the
+large-diff acceptance targets.
 
 ## Project layout
 
@@ -149,9 +148,10 @@ Sources/
                         review operations, launcher parsing)
   PRReviewDesktop/      SwiftUI app: store, workflows, views, commands, themes
   pr-review/            desktop launcher executable (pr-review:// handoff)
-PRReviewApp/            app bundle host (URL scheme, coordinator)
-PRReviewAppUITests/     demo-mode UI tests
-PRReview.xcodeproj/     Xcode project (xcodegen project.yml)
+PRReviewApp/            SwiftPM app executable and bundle resources
+scripts/build-app       SwiftPM build + macOS app-bundle packager
+PRReviewAppUITests/     optional Xcode/XCTest UI tests
+PRReview.xcodeproj/     optional Xcode project (xcodegen project.yml)
 Tests/
   PRReviewKitTests/     core unit tests
   PRReviewDesktopTests/ desktop store/workflow/command unit tests

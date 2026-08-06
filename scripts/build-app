@@ -1,0 +1,57 @@
+#!/bin/bash
+# Builds the SwiftPM app executable and assembles a directly-launchable macOS bundle.
+set -euo pipefail
+
+readonly script_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly project_directory="$(cd "$script_directory/.." && pwd)"
+readonly requested_configuration="${1:-debug}"
+
+case "$requested_configuration" in
+    debug|Debug) readonly configuration="debug" ;;
+    release|Release) readonly configuration="release" ;;
+    *)
+        echo "Configuration must be debug or release, not: $requested_configuration" >&2
+        exit 2
+        ;;
+esac
+
+readonly app_name="PR Review.app"
+readonly executable_name="PRReviewApp"
+readonly bundle_identifier="com.prreview.app"
+readonly app_path="$project_directory/build/$app_name"
+readonly contents_path="$app_path/Contents"
+readonly resources_path="$contents_path/Resources"
+readonly icon_source_path="$project_directory/PRReviewApp/Resources/Assets.xcassets/AppIcon.appiconset"
+
+cd "$project_directory"
+swift build --configuration "$configuration" --product "$executable_name"
+readonly binary_path="$(swift build --configuration "$configuration" --show-bin-path)/$executable_name"
+
+guard_binary() {
+    if [[ ! -x "$binary_path" ]]; then
+        echo "SwiftPM did not produce an executable at: $binary_path" >&2
+        exit 1
+    fi
+}
+
+guard_binary
+rm -rf "$app_path"
+mkdir -p "$contents_path/MacOS" "$resources_path"
+install -m 755 "$binary_path" "$contents_path/MacOS/$executable_name"
+cp "$project_directory/PRReviewApp/Resources/Info.plist" "$contents_path/Info.plist"
+plutil -replace CFBundleExecutable -string "$executable_name" "$contents_path/Info.plist"
+plutil -replace CFBundleIdentifier -string "$bundle_identifier" "$contents_path/Info.plist"
+
+readonly iconset_path="$resources_path/AppIcon.iconset"
+cp -R "$icon_source_path" "$iconset_path"
+rm "$iconset_path/Contents.json"
+iconutil --convert icns --output "$resources_path/AppIcon.icns" "$iconset_path"
+rm -rf "$iconset_path"
+
+# An ad-hoc signature makes the locally built bundle valid without requiring
+# a Developer ID certificate. Release distribution still needs Developer ID
+# signing and notarization.
+codesign --force --sign - "$app_path"
+
+echo "Built: $app_path"
+echo "Launch directly: open \"$app_path\""

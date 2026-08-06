@@ -8,6 +8,7 @@ let package = Package(
         .library(name: "PRReviewKit", targets: ["PRReviewKit"]),
         .library(name: "PRReviewDesktop", targets: ["PRReviewDesktop"]),
         .executable(name: "pr-review", targets: ["pr-review"]),
+        .executable(name: "PRReviewApp", targets: ["PRReviewApp"]),
     ],
     targets: [
         .target(
@@ -18,6 +19,13 @@ let package = Package(
             name: "pr-review",
             dependencies: ["PRReviewKit"],
             path: "Sources/pr-review"
+        ),
+        .executableTarget(
+            name: "PRReviewApp",
+            dependencies: ["PRReviewKit", "PRReviewDesktop"],
+            path: "PRReviewApp",
+            exclude: ["Resources"],
+            sources: ["App"]
         ),
         .target(
             name: "PRReviewBenchmarkSupport",

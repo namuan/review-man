@@ -1,6 +1,6 @@
 # review-man — build targets
 #
-#   make app          Build PR Review.app and copy it to build/PR Review.app
+#   make app          Build PR Review.app at build/PR Review.app
 #                     (directly launchable: double-click or `open build/PR Review.app`).
 #   make run          Build (if needed) and launch the app.
 #   make demo         Build and launch the app in offline demo mode.
@@ -12,12 +12,9 @@
 #   make clean        Remove build products.
 #
 # Variables:
-#   CONFIG=Release   Build a Release configuration instead of Debug.
+#   CONFIG=release   Build a release configuration instead of debug.
 
-CONFIG ?= Debug
-PROJECT := PRReview.xcodeproj
-SCHEME := PRReviewApp
-DERIVED := build/DerivedData
+CONFIG ?= debug
 APP_NAME := PR Review.app
 APP := build/$(APP_NAME)
 LOCAL_APPS := $(HOME)/Applications
@@ -28,15 +25,8 @@ all: app
 
 # Build the app and place a directly-launchable copy at build/PR Review.app.
 app:
-	xcodegen generate
-	xcodebuild -project $(PROJECT) -scheme $(SCHEME) -configuration $(CONFIG) \
-		-derivedDataPath $(DERIVED) build
-	rm -rf "$(APP)"
-	ditto "$(DERIVED)/Build/Products/$(CONFIG)/$(APP_NAME)" "$(APP)"
-	@echo ""
-	@echo "Built: $(APP)"
-	@echo "Launch directly:  open \"$(APP)\""
-	@echo "Demo mode:        open \"$(APP)\" --args --demo"
+	bash scripts/build-app $(CONFIG)
+	@echo "Demo mode: open \"$(APP)\" --args --demo"
 
 run: app
 	open "$(APP)"
@@ -55,15 +45,12 @@ launcher:
 	swift build -c release
 	@echo "Desktop launcher built: .build/release/pr-review (try --help)"
 
-# Remove any previously installed copy, build, then MOVE the app into
-# ~/Applications (no copy left in DerivedData).
-local-install:
+# Remove any previously installed copy, build, then move the app into
+# ~/Applications.
+local-install: app
 	rm -rf "$(LOCAL_APPS)/$(APP_NAME)"
 	mkdir -p "$(LOCAL_APPS)"
-	xcodegen generate
-	xcodebuild -project $(PROJECT) -scheme $(SCHEME) -configuration $(CONFIG) \
-		-derivedDataPath $(DERIVED) build
-	mv "$(DERIVED)/Build/Products/$(CONFIG)/$(APP_NAME)" "$(LOCAL_APPS)/$(APP_NAME)"
+	mv "$(APP)" "$(LOCAL_APPS)/$(APP_NAME)"
 	@echo ""
 	@echo "Installed: $(LOCAL_APPS)/$(APP_NAME)"
 	@echo "Launch:    open \"$(LOCAL_APPS)/$(APP_NAME)\""
