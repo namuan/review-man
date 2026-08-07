@@ -272,7 +272,7 @@ final class CommandProcess {
                 if cancelRequested {
                     proc.terminate()
                 } else if timeout > 0 {
-                    let t = Task { [weak self] in
+                    let t = Task { [weak self, timeout] in
                         do {
                             try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
                             self?.timedOutTrigger()

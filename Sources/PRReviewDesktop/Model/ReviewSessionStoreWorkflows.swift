@@ -140,7 +140,7 @@ extension ReviewSessionStore {
     /// history. Empty text on a new draft discards it; empty text on an
     /// existing draft deletes it.
     public func saveDraftEditor() {
-        guard var editor = draftEditor else { return }
+        guard let editor = draftEditor else { return }
         let trimmed = editor.text.trimmingCharacters(in: .whitespacesAndNewlines)
         if let id = editor.draftID {
             // Edit or delete existing.
@@ -606,7 +606,7 @@ public extension ReviewSessionStore {
     func commentableLineIDs(in file: DiffFile) -> [DiffRowID] {
         file.hunks.enumerated().flatMap { hunkIndex, hunk in
             hunk.lines.enumerated().compactMap { lineIndex, line in
-                guard let anchor = DraftRangeValidator.anchor(for: file, hunkIndex: hunkIndex, lineIndex: lineIndex) else {
+                guard DraftRangeValidator.anchor(for: file, hunkIndex: hunkIndex, lineIndex: lineIndex) != nil else {
                     return nil
                 }
                 return DiffRowID.line(

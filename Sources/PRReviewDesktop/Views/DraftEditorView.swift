@@ -39,7 +39,7 @@ public struct DraftEditorView: View {
                 Button("Cancel") { store.cancelDraftEditor() }
                     .accessibilityIdentifier("draft-cancel-button")
                 Spacer()
-                if let draft = editor.draftID {
+                if editor.draftID != nil {
                     Button("Delete") {
                         if let draft = store.review?.drafts.first(where: { $0.id == editor.draftID }) {
                             store.cancelDraftEditor()

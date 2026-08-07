@@ -32,7 +32,6 @@ public struct DiffLineView: View {
         // that many *characters*, so the monospace gutter wrapped vertically
         // and inflated every row to ~45px.
         let gutterWidth = CGFloat(gutter.count) * 7.2
-        let background = kindBackground(diffLine.kind, palette: palette)
 
         // Request tokens only when this line is actually realized (viewport-driven).
         let tokens = store.tokenCache.tokens(for: diffLine.content, language: Highlighter.language(for: file.path))
