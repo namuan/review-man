@@ -43,7 +43,7 @@ git clone https://github.com/namuan/review-man.git
 cd review-man
 make app     # debug build at build/PR Review.app
 make run     # build + launch
-make demo    # build + launch in offline demo mode
+make demo    # build + launch the offline load-test demo (250 files / 40k lines)
 make app CONFIG=release   # release build
 ```
 
@@ -100,8 +100,41 @@ pr-review --version                                # version
 - **Submit**: comment / approve / request-changes, anchored to the head commit
   SHA; submissions reject 422s when the head moved (refresh re-fetches and
   re-anchors).
-- **Demo mode** with an embedded sample PR for offline exploration and UI
-  tests.
+- **Demo mode with load testing**: `make demo` opens a synthetic monorepo-scale
+  PR (250 files / 40k changed lines by default) so the whole pipeline — parse,
+  anchor validation, sidebar search, hunk navigation, threads, highlighting —
+  can be exercised offline at large scale. Named tiers and fully custom sizes
+  are available (see [Demo load testing](#demo-load-testing)).
+
+## Demo load testing
+
+`make demo` launches the app in offline demo mode and opens a synthetic
+load-test PR. It needs no `gh`, no network, and no persistence — everything is
+generated deterministically, so the same command always opens the same PR.
+
+| Scale    | Files | Changed lines | Typical PR                        |
+|----------|------:|--------------:|-----------------------------------|
+| `small`  |     4 |            31 | Curated sample (welcome button)   |
+| `medium` |    50 |        10,000 | A busy feature PR                 |
+| `large`  |   250 |        40,000 | A wide refactor / module split    |
+| `xlarge` |   800 |       120,000 | A full monorepo migration         |
+
+```sh
+make demo                                            # large (default)
+open "build/PR Review.app" --args --demo
+open "build/PR Review.app" --args --demo --demo-scale xlarge
+open "build/PR Review.app" --args --demo --demo-files 500 --demo-lines 60000
+```
+
+- The PR header stats (additions/deletions/changed files) are computed from the
+  generated diff, so they always match what you see.
+- Review threads are spread across files and anchored on real added lines, so
+  thread navigation and inline replies are exercised at scale.
+- The welcome screen's **Open demo** button keeps the tiny `small` sample for
+  quick onboarding; `--demo` is the load-test path.
+- Run `make bench` for release-mode parse/row-build/highlight timings
+  (`PRReviewBench --fixture 50000 --files 250 --runs 3`), or `make smoke` for a
+  headless debug-build timing sweep across `medium`/`large`/`xlarge`.
 
 ## Requirements
 
@@ -129,7 +162,7 @@ pr-review --version                                # version
 ## Testing
 
 ```sh
-swift test   # 145 unit tests: diff parser, word diff, highlighter, row/payload
+swift test   # 156 unit tests: diff parser, word diff, highlighter, row/payload
              # builders, draft persistence, async cancellation + ordering,
              # head-SHA migration + orphans, syntax cache, dependency health,
              # desktop store/workflows/commands, launcher + URL handling

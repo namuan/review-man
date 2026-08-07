@@ -55,7 +55,9 @@ public final class ReviewSessionStore: ObservableObject {
 
     public let service: GitHubServing
     public let persistence: ReviewPersisting
-    public let tokenCache = SyntaxTokenCache()
+    /// Rendered diff lines, cached so file switches in large PRs don't
+    /// re-tokenize / re-attribute the viewport. Bounded LRU, per window.
+    public let diffLineCache = DiffLineCache()
 
     private var loadGeneration = 0
     private var loadTask: Task<Void, Never>?
@@ -89,14 +91,14 @@ public final class ReviewSessionStore: ObservableObject {
 
     // MARK: - Loading
 
-    public func openDemo() {
+    public func openDemo(scale: DemoScale = .small, files: Int? = nil, lines: Int? = nil) {
         suppressDependencyCheck = true
-        startLoad(reference: nil, demo: true)
+        startLoad(reference: nil, demo: true, scale: scale, files: files, lines: lines)
     }
 
     /// Opens a qualified reference (full URL or `owner/repo#number`).
     public func open(reference: String) {
-        startLoad(reference: reference, demo: false)
+        startLoad(reference: reference, demo: false, scale: .small)
     }
 
     public func cancelLoad() {
@@ -110,13 +112,13 @@ public final class ReviewSessionStore: ObservableObject {
         isBusy = false
     }
 
-    private func startLoad(reference: String?, demo: Bool) {
+    private func startLoad(reference: String?, demo: Bool, scale: DemoScale, files: Int? = nil, lines: Int? = nil) {
         loadGeneration += 1
         let generation = loadGeneration
         loadTask?.cancel()
 
         lastRequestedReference = demo ? "demo" : reference
-        let label = demo ? "demo" : (reference ?? "")
+        let label = demo ? "demo-\(scale)" : (reference ?? "")
         state = .loading(reference: label)
         isBusy = true
         banner = nil
@@ -127,7 +129,7 @@ public final class ReviewSessionStore: ObservableObject {
             do {
                 let presentation: ReviewPresentation
                 if demo {
-                    presentation = try await loader.loadDemo()
+                    presentation = try await loader.loadDemo(scale: scale, files: files, lines: lines)
                 } else {
                     presentation = try await loader.load(reference: reference ?? "")
                 }

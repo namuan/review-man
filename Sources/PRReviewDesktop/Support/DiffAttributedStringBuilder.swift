@@ -18,11 +18,20 @@ public enum DiffAttributedStringBuilder {
         var text = AttributedString(content)
         text.foregroundColor = foreground(for: line.kind, palette: palette)
 
+        // Precompute Character-offset → String.Index once (O(n)); the old
+        // per-token scan made build O(tokens × contentLength), which dominated
+        // file-switch latency on long lines.
+        let indices = stringIndices(for: content)
+        let indexAt = { (offset: Int) -> String.Index? in
+            guard offset >= 0, offset < indices.count else { return nil }
+            return indices[offset]
+        }
+
         // Syntax token foregrounds.
         for token in tokens
         where token.range.lowerBound >= 0 && token.range.upperBound <= charCount {
-            guard let start = stringIndex(of: token.range.lowerBound, in: content),
-                  let end = stringIndex(of: token.range.upperBound, in: content),
+            guard let start = indexAt(token.range.lowerBound),
+                  let end = indexAt(token.range.upperBound),
                   start < end,
                   let s = AttributedString.Index(start, within: text),
                   let e = AttributedString.Index(end, within: text),
@@ -33,8 +42,8 @@ public enum DiffAttributedStringBuilder {
         // Word-level change backgrounds (base kind color must survive).
         if let emphasis = line.emphasis, !emphasis.isEmpty,
            emphasis.lowerBound >= 0 && emphasis.upperBound <= charCount {
-            guard let start = stringIndex(of: emphasis.lowerBound, in: content),
-                  let end = stringIndex(of: emphasis.upperBound, in: content),
+            guard let start = indexAt(emphasis.lowerBound),
+                  let end = indexAt(emphasis.upperBound),
                   start < end,
                   let s = AttributedString.Index(start, within: text),
                   let e = AttributedString.Index(end, within: text),
@@ -69,14 +78,17 @@ public enum DiffAttributedStringBuilder {
         }
     }
 
-    /// Maps a Character offset to a String index; nil when out of bounds.
-    private static func stringIndex(of charOffset: Int, in content: String) -> String.Index? {
-        guard charOffset >= 0 else { return nil }
-        var idx = content.startIndex
-        for _ in 0..<charOffset {
-            guard idx < content.endIndex else { return nil }
-            idx = content.index(after: idx)
+    /// Character offset → String.Index, precomputed once per line (O(n) total
+    /// instead of O(n) per token).
+    private static func stringIndices(for content: String) -> [String.Index] {
+        var idxs: [String.Index] = []
+        idxs.reserveCapacity(content.count + 1)
+        var i = content.startIndex
+        idxs.append(i)
+        while i < content.endIndex {
+            i = content.index(after: i)
+            idxs.append(i)
         }
-        return idx
+        return idxs
     }
 }

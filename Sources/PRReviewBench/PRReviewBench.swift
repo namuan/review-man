@@ -2,13 +2,15 @@ import Foundation
 import PRReviewKit
 import PRReviewBenchmarkSupport
 
-/// Release-mode headless benchmark for the Phase 4 large-diff acceptance
-/// targets. Usage:
+/// Release-mode headless benchmark for the large-diff acceptance targets.
+/// Usage:
 ///   swift build -c release
-///   .build/release/PRReviewBench --fixture 50000 --runs 3
-/// Options: --fixture N, --runs N, --format text|json, --json-out PATH.
+///   .build/release/PRReviewBench --fixture 50000 --files 250 --runs 3
+/// Options: --fixture N (total parsed lines), --files N (file count; default
+/// derives from the line count), --runs N, --format text|json, --json-out PATH.
 private struct Options {
     var fixture = 50_000
+    var files = 0      // 0 = derive from the line count (legacy shape)
     var runs = 3
     var format = "text"
     var jsonOut: String?
@@ -23,6 +25,10 @@ private func parseOptions(_ args: [String]) -> Options {
             i += 1
             if i < args.count, let v = Int(args[i]), v > 0 { o.fixture = v }
             else { fail("--fixture requires a positive integer") }
+        case "--files":
+            i += 1
+            if i < args.count, let v = Int(args[i]), v > 0 { o.files = v }
+            else { fail("--files requires a positive integer") }
         case "--runs":
             i += 1
             if i < args.count, let v = Int(args[i]), v > 0 { o.runs = v }
@@ -37,10 +43,11 @@ private func parseOptions(_ args: [String]) -> Options {
             else { fail("--json-out requires a path") }
         case "--help", "-h":
             print("""
-            PRReviewBench — Phase 4 large-diff benchmark
+            PRReviewBench — large-diff benchmark
 
-            Usage: PRReviewBench [--fixture N] [--runs N] [--format text|json] [--json-out PATH]
-              --fixture N    parsed line count (default 50000)
+            Usage: PRReviewBench [--fixture N] [--files N] [--runs N] [--format text|json] [--json-out PATH]
+              --fixture N    total parsed line count (default 50000)
+              --files N      file count (default: derived from the line count)
               --runs N       repeated measurements (default 3)
               --format       text (default) or json
               --json-out     also write the JSON report to PATH
@@ -94,7 +101,11 @@ struct PRReviewBench {
 
         // Generation (once) + footprint before any parsing/row work.
         let (genTime, text) = Measurement.time {
-            SyntheticDiffFixture.make(lineCount: lineCount)
+            if options.files > 0 {
+                SyntheticDiffFixture.make(fileCount: options.files, lineCount: lineCount)
+            } else {
+                SyntheticDiffFixture.make(lineCount: lineCount)
+            }
         }
         let footprintAfterGeneration = Measurement.physicalFootprintBytes()
 
@@ -105,7 +116,7 @@ struct PRReviewBench {
         var parsedLines = 0
         var tokenCount = 0
 
-        for run in 0..<options.runs {
+        for _ in 0..<options.runs {
             let (parseTime, files) = Measurement.time {
                 DiffParser.parse(text)
             }
@@ -181,7 +192,7 @@ struct PRReviewBench {
             let jsonData = try! JSONSerialization.data(withJSONObject: summary, options: [.prettyPrinted, .sortedKeys])
             print(String(data: jsonData, encoding: .utf8)!)
         } else {
-            print("PRReviewBench — \(lineCount)-line fixture")
+            print("PRReviewBench — \(options.files > 0 ? "\(lineCount)-line / \(options.files)-file fixture" : "\(lineCount)-line fixture")")
             print("machine: \(machine) · \(version)")
             print("raw diff: \(text.utf8.count) bytes · generation: \(String(format: "%.3f", genTime))s")
             print("parsed: \(parsedLines) lines · \(hunkCount) hunks · \(fileCount) files · \(totalRows) display rows · \(tokenCount) tokens")

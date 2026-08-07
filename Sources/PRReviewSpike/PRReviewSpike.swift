@@ -190,7 +190,8 @@ private final class StallWatchdog: ObservableObject {
 private struct ContentView: View {
     @Environment(\.openWindow) private var openWindow
 
-    @State private var fixtureSize = 50_000
+    @State private var fixtureSize = 40_000
+    @State private var fixtureFiles = 250
     @State private var rows: [SpikeRow] = []
     @State private var parseSeconds: Double = 0
     @State private var rowSeconds: Double = 0
@@ -206,7 +207,8 @@ private struct ContentView: View {
     @State private var routingNote = "WindowGroup(for:) dedup: opening the same key focuses the existing window"
     @StateObject private var watchdog = StallWatchdog()
 
-    private let fixtureChoices = [10_000, 50_000, 100_000]
+    private let fixtureChoices = [10_000, 40_000, 120_000]
+    private let fileChoices = [50, 250, 800]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -252,10 +254,14 @@ private struct ContentView: View {
 
     private var controls: some View {
         HStack(spacing: 12) {
-            Picker("Fixture", selection: $fixtureSize) {
-                ForEach(fixtureChoices, id: \.self) { n in Text("\(n) lines") }
+            Picker("Lines", selection: $fixtureSize) {
+                ForEach(fixtureChoices, id: \.self) { n in Text("\(n)") }
             }
-            .frame(width: 140)
+            .frame(width: 110)
+            Picker("Files", selection: $fixtureFiles) {
+                ForEach(fileChoices, id: \.self) { n in Text("\(n)") }
+            }
+            .frame(width: 90)
             Button("Load") { load() }
             Button("Top") { requestScroll(hunkIDs.first) }
             Button("Bottom") { requestScroll(hunkIDs.last) }
@@ -373,6 +379,7 @@ private struct ContentView: View {
     private var statusBar: some View {
         HStack(spacing: 16) {
             Text("rows \(rows.count)")
+            Text("files \(fixtureFiles)")
             Text(String(format: "parse %.3fs", parseSeconds))
             Text(String(format: "row build %.3fs", rowSeconds))
             Text(String(format: "background prep %.3fs", loadSeconds))
@@ -390,9 +397,10 @@ private struct ContentView: View {
     private func load() {
         watchdog.pause()
         let size = fixtureSize
+        let files = fixtureFiles
         let started = Date()
         DispatchQueue.global(qos: .userInitiated).async {
-            let text = SyntheticDiffFixture.make(lineCount: size)
+            let text = SyntheticDiffFixture.make(fileCount: files, lineCount: size)
             let (parseTime, parsed) = Measurement.time { DiffParser.parse(text) }
             let (rowTime, built) = Measurement.time { buildSpikeRows(files: parsed) }
             DispatchQueue.main.async {
@@ -417,20 +425,46 @@ private struct ContentView: View {
 // MARK: - App
 
 /// Headless smoke mode: runs the exact pipeline the window uses (generate →
-/// parse → row build) for every fixture size and reports timings to stdout.
-/// `PRReviewSpike --smoke` produces CI-friendly evidence without a window.
+/// parse → row build) for the default load-test scales and reports timings to
+/// stdout. `PRReviewSpike --smoke [--files N --lines N]` produces
+/// CI-friendly evidence without a window.
 private func runSmoke() {
+    let args = CommandLine.arguments
+    var fileOverride: Int?
+    var lineOverride: Int?
+    var i = 1
+    while i < args.count {
+        switch args[i] {
+        case "--files":
+            i += 1
+            if i < args.count, let v = Int(args[i]), v > 0 { fileOverride = v }
+        case "--lines":
+            i += 1
+            if i < args.count, let v = Int(args[i]), v > 0 { lineOverride = v }
+        default:
+            i += 1
+        }
+    }
+
     print("PRReviewSpike smoke — pipeline timing (debug build)")
-    for size in [10_000, 50_000, 100_000] {
-        let text = SyntheticDiffFixture.make(lineCount: size)
-        let (parseTime, files) = Measurement.time { DiffParser.parse(text) }
-        let (rowTime, rows) = Measurement.time { buildSpikeRows(files: files) }
-        let footprint = Measurement.miB(Measurement.physicalFootprintBytes())
-        let lines = files.reduce(0) { $0 + $1.lineCount }
-        print(String(format: "%6d lines → parse %6.1fms, rows %6.1fms, %7d rows, %6.1f MiB",
-                     size, parseTime * 1000, rowTime * 1000, rows.count, footprint))
+    if let fileOverride, let lineOverride {
+        smokeRow(files: fileOverride, lines: lineOverride)
+        exit(0)
+    }
+    for scale in [DemoScale.medium, .large, .xlarge] {
+        smokeRow(files: scale.fileCount, lines: scale.lineCount)
     }
     exit(0)
+}
+
+private func smokeRow(files: Int, lines: Int) {
+    let text = SyntheticDiffFixture.make(fileCount: files, lineCount: lines)
+    let (parseTime, parsed) = Measurement.time { DiffParser.parse(text) }
+    let (rowTime, rows) = Measurement.time { buildSpikeRows(files: parsed) }
+    let footprint = Measurement.miB(Measurement.physicalFootprintBytes())
+    let actual = parsed.reduce(0) { $0 + $1.lineCount }
+    print(String(format: "%6d lines / %4d files → parse %6.1fms, rows %6.1fms, %7d rows, %6.1f MiB",
+                 actual, files, parseTime * 1000, rowTime * 1000, rows.count, footprint))
 }
 
 @main

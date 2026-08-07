@@ -1,6 +1,6 @@
 import XCTest
 import PRReviewKit
-@testable import PRReviewBenchmarkSupport
+@testable import PRReviewKit
 
 final class SyntheticDiffFixtureTests: XCTestCase {
 
@@ -65,5 +65,45 @@ final class SyntheticDiffFixtureTests: XCTestCase {
         // 10,000 diff lines + hunk headers + empty states.
         XCTAssertGreaterThan(rowCount, 10_000)
         XCTAssertLessThan(rowCount, 12_000)
+    }
+
+    // MARK: - Large-scale (load-test) fixtures
+
+    /// `make(fileCount:lineCount:)` produces exactly the requested number of
+    /// files with exactly the requested total line count, even well beyond
+    /// the curated path list (a monorepo-scale PR).
+    func testFileCountFixtureParsesToExactCounts() throws {
+        for (fileCount, lineCount) in [(50, 10_000), (250, 40_000), (800, 120_000)] {
+            let text = SyntheticDiffFixture.make(fileCount: fileCount, lineCount: lineCount)
+            let files = try SyntheticDiffFixture.verifyAndParse(text, expectedLineCount: lineCount)
+            XCTAssertEqual(files.count, fileCount, "\(fileCount) files, \(lineCount) lines")
+        }
+    }
+
+    /// Every file path is unique — the sidebar and thread anchoring key on
+    /// path, so a load-test PR must never repeat one.
+    func testFileCountFixturePathsAreUnique() throws {
+        let text = SyntheticDiffFixture.make(fileCount: 250, lineCount: 40_000)
+        let paths = try SyntheticDiffFixture.verifyAndParse(text, expectedLineCount: 40_000).map(\.path)
+        XCTAssertEqual(Set(paths).count, paths.count)
+        // First files keep the realistic curated mix.
+        XCTAssertEqual(paths[0], SyntheticDiffFixture.paths[0])
+    }
+
+    /// Large fixtures stay deterministic: same seed, same bytes.
+    func testFileCountFixtureIsDeterministic() {
+        let a = SyntheticDiffFixture.make(fileCount: 250, lineCount: 40_000, seed: 11)
+        let b = SyntheticDiffFixture.make(fileCount: 250, lineCount: 40_000, seed: 11)
+        XCTAssertEqual(a, b)
+        let c = SyntheticDiffFixture.make(fileCount: 250, lineCount: 40_000, seed: 12)
+        XCTAssertNotEqual(a, c)
+    }
+
+    /// Every file in a large fixture has changes (no empty files), so the
+    /// sidebar shows a change on every row and navigation stays meaningful.
+    func testFileCountFixtureHasNoEmptyFiles() throws {
+        let text = SyntheticDiffFixture.make(fileCount: 250, lineCount: 40_000)
+        let files = try SyntheticDiffFixture.verifyAndParse(text, expectedLineCount: 40_000)
+        XCTAssertTrue(files.allSatisfy { $0.lineCount > 0 })
     }
 }

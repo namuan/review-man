@@ -1,9 +1,9 @@
 import Foundation
-import PRReviewKit
 
 /// Deterministic synthetic unified-diff generator shared by the benchmark,
-/// the SwiftUI spike, and tests. Produces realistic multi-file, multi-hunk
-/// diffs that parse to exactly the requested number of `DiffLine` values.
+/// the SwiftUI spike, the demo, and tests. Produces realistic multi-file,
+/// multi-hunk diffs that parse to exactly the requested number of `DiffLine`
+/// values.
 public enum SyntheticDiffFixture {
 
     /// Realistic path mix so highlighting and row building see varied
@@ -21,27 +21,56 @@ public enum SyntheticDiffFixture {
     ]
 
     /// Generates unified-diff text. `lineCount` is the number of parsed
-    /// `DiffLine` values (context + added + removed) across all files.
+    /// `DiffLine` values (context + added + removed) across all files. The
+    /// file count is derived from the line count (capped at `paths.count`),
+    /// matching the original benchmark fixture shape.
     public static func make(
         lineCount: Int,
         seed: UInt64 = 42,
         targetLinesPerHunk: Int = 120
     ) -> String {
+        let fileCount = min(paths.count, max(2, lineCount / 20000) + 1)
+        return make(fileCount: fileCount, lineCount: lineCount, seed: seed, targetLinesPerHunk: targetLinesPerHunk)
+    }
+
+    /// Generates a unified diff with exactly `fileCount` files whose parsed
+    /// `DiffLine` values (context + added + removed) total exactly
+    /// `lineCount`. File paths are unique at any scale: the first
+    /// `paths.count` files use the realistic mix, larger PRs cycle through
+    /// generated module paths so a load-test demo can represent a large
+    /// monorepo migration without repeating a path.
+    public static func make(
+        fileCount: Int,
+        lineCount: Int,
+        seed: UInt64 = 42,
+        targetLinesPerHunk: Int = 120
+    ) -> String {
         precondition(lineCount > 0, "lineCount must be positive")
+        precondition(fileCount > 0, "fileCount must be positive")
         var rng = SplitMix64(seed: seed)
         var lines: [String] = []
         lines.reserveCapacity(lineCount + lineCount / 8)
 
-        let fileCount = min(paths.count, max(2, lineCount / 20000) + 1)
         var remaining = lineCount
         for fi in 0..<fileCount {
             let isLast = fi == fileCount - 1
             let budget = isLast ? remaining : remaining / (fileCount - fi)
             remaining -= budget
-            let path = paths[fi % paths.count]
+            let path = path(for: fi)
             appendFile(path: path, budget: budget, rng: &rng, targetLinesPerHunk: targetLinesPerHunk, into: &lines)
         }
         return lines.joined(separator: "\n")
+    }
+
+    /// Deterministic path for file index `fi`: the curated realistic mix for
+    /// the first files, then generated module paths with an index suffix so
+    /// paths stay unique beyond `paths.count`.
+    public static func path(for fi: Int) -> String {
+        if fi < paths.count { return paths[fi] }
+        let module = ["Engine", "Store", "Pipeline", "Renderer", "Sync", "Telemetry"][fi % 6]
+        let area = ["core", "ui", "lib", "services"][(fi / 6) % 4]
+        let ext = ["swift", "ts", "py", "json", "md", "sh"][(fi / 24) % 6]
+        return "Sources/\(module)/\(area)/\(module)\(fi).\(ext)"
     }
 
     /// Deterministic 8-bit FNV-1a hash of the path (Swift's `hashValue` is

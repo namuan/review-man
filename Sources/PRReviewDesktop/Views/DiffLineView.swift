@@ -22,9 +22,8 @@ public struct DiffLineView: View {
         guard let diffLine = file.line(at: hunkIndex, lineIndex) else {
             return AnyView(EmptyView())
         }
-        let palette = SemanticTheme.palette(
-            for: colorScheme, increasedContrast: AppearanceSettings.increasedContrast
-        )
+        let highContrast = AppearanceSettings.increasedContrast
+        let palette = SemanticTheme.palette(for: colorScheme, increasedContrast: highContrast)
         let gutter = DiffAttributedStringBuilder.gutterText(for: diffLine, digits: file.gutterDigits)
         // The gutter text is `digits*2 + 3` characters; SF Mono's advance at
         // 12pt is ~0.6 × point size. The width MUST be in points — the old
@@ -33,9 +32,16 @@ public struct DiffLineView: View {
         // and inflated every row to ~45px.
         let gutterWidth = CGFloat(gutter.count) * 7.2
 
-        // Request tokens only when this line is actually realized (viewport-driven).
-        let tokens = store.tokenCache.tokens(for: diffLine.content, language: Highlighter.language(for: file.path))
-        let content = DiffAttributedStringBuilder.build(line: diffLine, tokens: tokens, palette: palette)
+        // Rendered line from the per-window cache: tokenization + attributed
+        // string building happen once per line per theme, so switching files
+        // (even rapidly, in a large PR) renders the viewport from cache.
+        let content = store.diffLineCache.attributedString(
+            for: diffLine,
+            language: Highlighter.language(for: file.path),
+            palette: palette,
+            isDark: colorScheme == .dark,
+            highContrast: highContrast
+        )
 
         return AnyView(
             HStack(spacing: 0) {
@@ -56,7 +62,7 @@ public struct DiffLineView: View {
             // selection overlay) spans the full row width like GitHub's diff,
             // not just the text's intrinsic width.
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(selectionOrHoverBackground(for: diffLine))
+            .background(selectionOrHoverBackground(for: diffLine, palette: palette))
             .contentShape(Rectangle())
             .onTapGesture { handleTap(hunkIndex: hunkIndex, lineIndex: lineIndex) }
             .onHover { hovering in
@@ -86,16 +92,14 @@ public struct DiffLineView: View {
 
     /// Selected rows win over hovered rows; hover uses a light overlay so it
     /// does not fight the kind background.
-    private func selectionOrHoverBackground(for diffLine: DiffLine) -> SwiftUI.Color {
+    private func selectionOrHoverBackground(for diffLine: DiffLine, palette: SemanticTheme.Palette) -> SwiftUI.Color {
         let id = DiffRowID.line(
             file: file.path, hunk: hunkIndex, kind: diffLine.kind,
             old: diffLine.oldLine, new: diffLine.newLine
         )
         if store.selection.rowID == id { return SwiftUI.Color.accentColor.opacity(0.18) }
         if store.hoveredRowID == id { return SwiftUI.Color.gray.opacity(0.10) }
-        return kindBackground(diffLine.kind, palette: SemanticTheme.palette(
-            for: colorScheme, increasedContrast: AppearanceSettings.increasedContrast
-        ))
+        return kindBackground(diffLine.kind, palette: palette)
     }
 
     /// One meaningful VoiceOver label per line.

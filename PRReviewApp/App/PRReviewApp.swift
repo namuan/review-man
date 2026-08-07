@@ -19,11 +19,11 @@ struct PRReviewApp: App {
                     coordinator.handle(url: url)
                 }
                 .onAppear {
-                    // UI-test/demo launch path: --demo opens the offline sample
-                    // review without gh, persistence, or dependency checks.
-                    if coordinator.consumeAutoOpenDemo() {
-                        coordinator.store(for: nil).openDemo()
-                    }
+                    // UI-test/demo launch path: --demo opens the offline
+                    // sample review without gh, persistence, or dependency
+                    // checks. --demo defaults to the .large load-test scale;
+                    // see AppCoordinator for --demo-scale / --demo-files.
+                    coordinator.consumeAutoOpenDemo()
                 }
         }
         .defaultSize(width: 1100, height: 720)
@@ -43,14 +43,50 @@ final class AppCoordinator: ObservableObject {
     @Published var pendingOpenReference: String?
 
     private var stores: [String: ReviewSessionStore] = [:]
-    private var autoOpenDemo = CommandLine.arguments.contains("--demo")
+    private let autoOpenDemoRequest: DemoAutoOpen?
 
-    /// Consumed once per process; returns true when the first blank window
-    /// should open the demo review.
-    func consumeAutoOpenDemo() -> Bool {
-        let should = autoOpenDemo
-        autoOpenDemo = false
-        return should
+    /// Parses the demo launch arguments once. `--demo` opens the offline demo
+    /// at the `.large` load-test scale by default; `--demo-scale
+    /// <small|medium|large|xlarge>` picks a named tier, and
+    /// `--demo-files N --demo-lines M` builds a custom-sized PR (the custom
+    /// counts win over the named scale).
+    init() {
+        let args = CommandLine.arguments
+        guard args.contains("--demo") else {
+            autoOpenDemoRequest = nil
+            return
+        }
+        var scale = DemoScale.large
+        var files: Int?
+        var lines: Int?
+        var i = 1
+        while i < args.count {
+            switch args[i] {
+            case "--demo-scale":
+                if i + 1 < args.count, let parsed = DemoScale.parse(args[i + 1]) { scale = parsed }
+                i += 2
+            case "--demo-files":
+                if i + 1 < args.count, let v = Int(args[i + 1]), v > 0 { files = v }
+                i += 2
+            case "--demo-lines":
+                if i + 1 < args.count, let v = Int(args[i + 1]), v > 0 { lines = v }
+                i += 2
+            default:
+                i += 1
+            }
+        }
+        autoOpenDemoRequest = DemoAutoOpen(scale: scale, files: files, lines: lines)
+    }
+
+    /// Consumed once per process; opens the requested demo review on the
+    /// first blank window.
+    func consumeAutoOpenDemo() {
+        guard let request = autoOpenDemoRequest else { return }
+        if let files = request.files, let lines = request.lines {
+            store(for: nil).openDemo(scale: request.scale, files: files, lines: lines)
+        } else {
+            store(for: nil).openDemo(scale: request.scale)
+        }
     }
 
     func store(for key: String?) -> ReviewSessionStore {
@@ -106,4 +142,12 @@ struct OpenWindowProxy: View {
                 }
             }
     }
+}
+
+/// A parsed `--demo` launch request: a named scale plus optional custom
+/// file/line counts (which override the named scale).
+private struct DemoAutoOpen {
+    let scale: DemoScale
+    let files: Int?
+    let lines: Int?
 }

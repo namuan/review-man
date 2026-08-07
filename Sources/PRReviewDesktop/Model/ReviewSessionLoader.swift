@@ -15,9 +15,17 @@ public struct ReviewSessionLoader {
         self.persistence = persistence
     }
 
-    /// Loads the built-in demo PR.
-    public func loadDemo() async throws -> ReviewPresentation {
-        let demo = DemoData.makeDemoBundle()
+    /// Loads the built-in demo PR at the given scale (or custom file/line
+    /// counts). Generation and parsing run off the main actor so a large
+    /// load-test demo never freezes the window while it is being built.
+    public func loadDemo(scale: DemoScale = .small, files: Int? = nil, lines: Int? = nil) async throws -> ReviewPresentation {
+        let demo = await Task.detached(priority: .userInitiated) {
+            if let files, let lines {
+                DemoData.makeDemoBundle(files: files, lines: lines)
+            } else {
+                DemoData.makeDemoBundle(scale: scale)
+            }
+        }.value
         let drafts = DraftAnchorValidator.revalidated(demo.drafts, against: demo.files)
         return ReviewPresentation(
             endpoint: demo.endpoint,
