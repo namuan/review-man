@@ -39,7 +39,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "PRReviewBench",
-            dependencies: ["PRReviewBenchmarkSupport", "PRReviewKit"],
+            dependencies: ["PRReviewBenchmarkSupport", "PRReviewKit", "PRReviewDesktop"],
             path: "Sources/PRReviewBench"
         ),
         .executableTarget(

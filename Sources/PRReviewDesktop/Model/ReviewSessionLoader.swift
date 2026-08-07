@@ -16,25 +16,28 @@ public struct ReviewSessionLoader {
     }
 
     /// Loads the built-in demo PR at the given scale (or custom file/line
-    /// counts). Generation and parsing run off the main actor so a large
-    /// load-test demo never freezes the window while it is being built.
+    /// counts). Generation, parsing, draft revalidation, AND presentation
+    /// assembly (rows, indexes, sidebar aggregation) all run off the main
+    /// actor, so even a load-test-scale demo never freezes the window.
     public func loadDemo(scale: DemoScale = .small, files: Int? = nil, lines: Int? = nil) async throws -> ReviewPresentation {
-        let demo = await Task.detached(priority: .userInitiated) {
+        let presentation = await Task.detached(priority: .userInitiated) {
+            let demo: DemoBundle
             if let files, let lines {
-                DemoData.makeDemoBundle(files: files, lines: lines)
+                demo = DemoData.makeDemoBundle(files: files, lines: lines)
             } else {
-                DemoData.makeDemoBundle(scale: scale)
+                demo = DemoData.makeDemoBundle(scale: scale)
             }
+            let drafts = DraftAnchorValidator.revalidated(demo.drafts, against: demo.files)
+            return ReviewPresentation(
+                endpoint: demo.endpoint,
+                pr: demo.pr,
+                files: demo.files,
+                threads: demo.threads,
+                drafts: drafts,
+                viewed: demo.viewed
+            )
         }.value
-        let drafts = DraftAnchorValidator.revalidated(demo.drafts, against: demo.files)
-        return ReviewPresentation(
-            endpoint: demo.endpoint,
-            pr: demo.pr,
-            files: demo.files,
-            threads: demo.threads,
-            drafts: drafts,
-            viewed: demo.viewed
-        )
+        return presentation
     }
 
     /// Loads a qualified reference (full URL or `owner/repo#number`). Bare
@@ -56,16 +59,21 @@ public struct ReviewSessionLoader {
 
         let drafts = try await persistence.loadDrafts(for: endpoint, headSHA: bundle.pr.headRefOid)
         let viewed = try await persistence.loadViewed(for: endpoint, headSHA: bundle.pr.headRefOid)
-        let validated = DraftAnchorValidator.revalidated(drafts, against: bundle.files)
 
-        return ReviewPresentation(
-            endpoint: endpoint,
-            pr: bundle.pr,
-            files: bundle.files,
-            threads: bundle.threads,
-            drafts: validated,
-            viewed: viewed
-        )
+        // Draft revalidation + presentation assembly happen off the main actor;
+        // only the completed immutable snapshot is handed back.
+        let presentation = await Task.detached(priority: .userInitiated) {
+            let validated = DraftAnchorValidator.revalidated(drafts, against: bundle.files)
+            return ReviewPresentation(
+                endpoint: endpoint,
+                pr: bundle.pr,
+                files: bundle.files,
+                threads: bundle.threads,
+                drafts: validated,
+                viewed: viewed
+            )
+        }.value
+        return presentation
     }
 
     public enum LoadError: Error, LocalizedError {

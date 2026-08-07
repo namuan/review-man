@@ -358,21 +358,35 @@ public final class GitHubClient: GitHubServing {
                 variables: variables
             )
             let conn = data.repository.pullRequest.reviewThreads
-            for node in conn.nodes {
-                let comments = try await fetchThreadComments(threadID: node.id, initial: node.comments)
-                threads.append(PRThread(
-                    id: node.id,
-                    path: node.path,
-                    line: node.line,
-                    originalLine: node.originalLine,
-                    side: node.diffSide ?? "RIGHT",
-                    startLine: node.startLine,
-                    startSide: node.startLine != nil ? (node.diffSide ?? "RIGHT") : nil,
-                    isOutdated: node.isOutdated,
-                    isResolved: node.isResolved,
-                    comments: comments
-                ))
+            // Fetch each thread's (possibly multi-page) comments concurrently;
+            // the task group keeps concurrency bounded by the executor and
+            // preserves thread order by collecting into index slots.
+            let pageNodes = conn.nodes
+            var ordered: [PRThread?] = Array(repeating: nil, count: pageNodes.count)
+            try await withThrowingTaskGroup(of: (Int, PRThread).self) { group in
+                for (i, node) in pageNodes.enumerated() {
+                    group.addTask {
+                        let comments = try await self.fetchThreadComments(threadID: node.id, initial: node.comments)
+                        let thread = PRThread(
+                            id: node.id,
+                            path: node.path,
+                            line: node.line,
+                            originalLine: node.originalLine,
+                            side: node.diffSide ?? "RIGHT",
+                            startLine: node.startLine,
+                            startSide: node.startLine != nil ? (node.diffSide ?? "RIGHT") : nil,
+                            isOutdated: node.isOutdated,
+                            isResolved: node.isResolved,
+                            comments: comments
+                        )
+                        return (i, thread)
+                    }
+                }
+                for try await (i, thread) in group {
+                    ordered[i] = thread
+                }
             }
+            threads.append(contentsOf: ordered.compactMap { $0 })
             after = conn.pageInfo.hasNextPage ? conn.pageInfo.endCursor : nil
         } while after != nil
         return threads
@@ -409,10 +423,13 @@ public final class GitHubClient: GitHubServing {
     }
 
     public func fetchAll(_ ep: PREndpoint) async throws -> FetchBundle {
-        let pr = try await fetchPRInfo(ep)
-        let files = try await fetchDiff(ep)
-        let threads = try await fetchThreads(ep)
-        return FetchBundle(pr: pr, files: files, threads: threads)
+        // The three top-level fetches are independent; running them
+        // concurrently hides subprocess startup and network latency behind each
+        // other. Cancellation propagates to all three via `async let`.
+        async let pr = fetchPRInfo(ep)
+        async let files = fetchDiff(ep)
+        async let threads = fetchThreads(ep)
+        return try await FetchBundle(pr: pr, files: files, threads: threads)
     }
 
     // MARK: - Writes

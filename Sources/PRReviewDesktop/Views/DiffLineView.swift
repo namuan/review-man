@@ -2,26 +2,37 @@ import SwiftUI
 import PRReviewKit
 
 /// One diff line: fixed-width old/new gutters plus syntax-colored, word-level
-/// highlighted content. Tokenization is demand-driven per realized line.
+/// highlighted content. Tokenization is demand-driven per realized line and
+/// cached per (line, language, theme) in the store's `DiffLineCache`.
 public struct DiffLineView: View {
     @ObservedObject public var store: ReviewSessionStore
+    @ObservedObject private var hover: ReviewHoverModel
     public let file: DiffFile
     public let hunkIndex: Int
     public let lineIndex: Int
+    /// Compact language identity for the cache key, resolved once per file
+    /// (avoids a table scan + full Language hashing per line).
+    public let languageID: Int?
 
     @Environment(\.colorScheme) private var colorScheme
 
-    public init(store: ReviewSessionStore, file: DiffFile, hunkIndex: Int, lineIndex: Int) {
+    public init(store: ReviewSessionStore, file: DiffFile, hunkIndex: Int, lineIndex: Int, languageID: Int?) {
         self.store = store
+        self.hover = store.hover
         self.file = file
         self.hunkIndex = hunkIndex
         self.lineIndex = lineIndex
+        self.languageID = languageID
     }
 
+    @ViewBuilder
     public var body: some View {
-        guard let diffLine = file.line(at: hunkIndex, lineIndex) else {
-            return AnyView(EmptyView())
+        if let diffLine = file.line(at: hunkIndex, lineIndex) {
+            lineRow(diffLine)
         }
+    }
+
+    private func lineRow(_ diffLine: DiffLine) -> some View {
         let highContrast = AppearanceSettings.increasedContrast
         let palette = SemanticTheme.palette(for: colorScheme, increasedContrast: highContrast)
         let gutter = DiffAttributedStringBuilder.gutterText(for: diffLine, digits: file.gutterDigits)
@@ -37,57 +48,57 @@ public struct DiffLineView: View {
         // (even rapidly, in a large PR) renders the viewport from cache.
         let content = store.diffLineCache.attributedString(
             for: diffLine,
-            language: Highlighter.language(for: file.path),
+            languageID: languageID,
             palette: palette,
             isDark: colorScheme == .dark,
             highContrast: highContrast
         )
 
-        return AnyView(
-            HStack(spacing: 0) {
-                Text(gutter)
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(palette.gutterForeground)
-                    .lineLimit(1)
-                    .frame(width: gutterWidth, alignment: .trailing)
-                    .padding(.leading, 6)
-                    .background(palette.gutterBackground.opacity(0.5))
-                Text(content)
-                    .font(.system(size: 12, design: .monospaced))
-                    .lineLimit(1)
-                    .padding(.horizontal, 8)
-                Spacer(minLength: 0)
-            }
-            // Order matters: frame first so the background (and the hover /
-            // selection overlay) spans the full row width like GitHub's diff,
-            // not just the text's intrinsic width.
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(selectionOrHoverBackground(for: diffLine, palette: palette))
-            .contentShape(Rectangle())
-            .onTapGesture { handleTap(hunkIndex: hunkIndex, lineIndex: lineIndex) }
-            .onHover { hovering in
-                store.hoveredRowID = hovering ? DiffRowID.line(
-                    file: file.path, hunk: hunkIndex, kind: diffLine.kind,
-                    old: diffLine.oldLine, new: diffLine.newLine
-                ) : nil
-            }
-            .contextMenu {
-                Button("Comment") {
-                    if let anchor = DraftRangeValidator.anchor(for: file, hunkIndex: hunkIndex, lineIndex: lineIndex) {
-                        store.beginDraft(at: DraftStartAnchor(
-                            path: anchor.path, side: anchor.side, line: anchor.line,
-                            startLine: anchor.startLine, startSide: anchor.startSide
-                        ))
-                    }
-                }
-                Button("Copy \(file.path):\(diffLine.newLine ?? diffLine.oldLine ?? 0)") {
-                    _ = store.copyLineToClipboard(file: file, hunkIndex: hunkIndex, lineIndex: lineIndex)
+        return HStack(spacing: 0) {
+            Text(gutter)
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(palette.gutterForeground)
+                .lineLimit(1)
+                .frame(width: gutterWidth, alignment: .trailing)
+                .padding(.leading, 6)
+                .background(palette.gutterBackground.opacity(0.5))
+            Text(content)
+                .font(.system(size: 12, design: .monospaced))
+                .lineLimit(1)
+                .padding(.horizontal, 8)
+            Spacer(minLength: 0)
+        }
+        // Order matters: frame first so the background (and the hover /
+        // selection overlay) spans the full row width like GitHub's diff,
+        // not just the text's intrinsic width.
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(selectionOrHoverBackground(for: diffLine, palette: palette))
+        .contentShape(Rectangle())
+        .onTapGesture { handleTap(hunkIndex: hunkIndex, lineIndex: lineIndex) }
+        .onHover { hovering in
+            // Hover lives on the dedicated hover model, so pointer movement
+            // only re-renders diff rows — never the sidebar/header/editors.
+            hover.rowID = hovering ? DiffRowID.line(
+                file: file.path, hunk: hunkIndex, kind: diffLine.kind,
+                old: diffLine.oldLine, new: diffLine.newLine
+            ) : nil
+        }
+        .contextMenu {
+            Button("Comment") {
+                if let anchor = DraftRangeValidator.anchor(for: file, hunkIndex: hunkIndex, lineIndex: lineIndex) {
+                    store.beginDraft(at: DraftStartAnchor(
+                        path: anchor.path, side: anchor.side, line: anchor.line,
+                        startLine: anchor.startLine, startSide: anchor.startSide
+                    ))
                 }
             }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(lineAccessibilityLabel(for: diffLine))
-            .accessibilityIdentifier("diff-line-\(file.path)-h\(hunkIndex)-\(diffLine.oldLine ?? -1)-\(diffLine.newLine ?? -1)")
-        )
+            Button("Copy \(file.path):\(diffLine.newLine ?? diffLine.oldLine ?? 0)") {
+                _ = store.copyLineToClipboard(file: file, hunkIndex: hunkIndex, lineIndex: lineIndex)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(lineAccessibilityLabel(for: diffLine))
+        .accessibilityIdentifier("diff-line-\(file.path)-h\(hunkIndex)-\(diffLine.oldLine ?? -1)-\(diffLine.newLine ?? -1)")
     }
 
     /// Selected rows win over hovered rows; hover uses a light overlay so it
@@ -98,7 +109,7 @@ public struct DiffLineView: View {
             old: diffLine.oldLine, new: diffLine.newLine
         )
         if store.selection.rowID == id { return SwiftUI.Color.accentColor.opacity(0.18) }
-        if store.hoveredRowID == id { return SwiftUI.Color.gray.opacity(0.10) }
+        if hover.rowID == id { return SwiftUI.Color.gray.opacity(0.10) }
         return kindBackground(diffLine.kind, palette: palette)
     }
 
@@ -226,8 +237,8 @@ public struct ThreadCardView: View {
                 }
                 Spacer(minLength: 0)
             }
-            if let reply = store.replyEditors[thread.id] {
-                replyEditor(reply)
+            if store.replyEditors[thread.id] != nil {
+                ReplyEditorView(store: store, threadID: thread.id)
             }
         }
         .padding(6)
@@ -244,53 +255,88 @@ public struct ThreadCardView: View {
         .accessibilityIdentifier("thread-card-\(thread.id)")
     }
 
-    private func replyEditor(_ reply: ReplyEditorState) -> some View {
+    private var accentColor: SwiftUI.Color {
+        thread.isResolved ? .gray : (thread.isOutdated ? .secondary : .purple)
+    }
+
+    /// Cached formatter: `RelativeDateTimeFormatter` construction is expensive,
+    /// and thread cards render one relative timestamp per comment.
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return formatter
+    }()
+
+    private func timeAgo(_ date: Date) -> String {
+        Self.relativeFormatter.localizedString(for: date, relativeTo: Date())
+    }
+}
+
+/// Inline reply editor for one thread. The text lives in local `@State` so
+/// keystrokes never publish the session store; it is committed to the store
+/// only when Send/Retry is pressed (and the store retains the body across a
+/// failed send so retry keeps the text).
+private struct ReplyEditorView: View {
+    @ObservedObject public var store: ReviewSessionStore
+    public let threadID: String
+
+    @State private var text: String = ""
+
+    public init(store: ReviewSessionStore, threadID: String) {
+        self.store = store
+        self.threadID = threadID
+    }
+
+    public var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            TextEditor(text: Binding(
-                get: { store.replyEditors[reply.threadID]?.body ?? "" },
-                set: { newValue in
-                    var editor = store.replyEditors[reply.threadID]
-                    editor?.body = newValue
-                    store.replyEditors[reply.threadID] = editor
-                }
-            ))
-            .font(.system(size: 12, design: .monospaced))
-            .frame(minHeight: 48)
-            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.gray.opacity(0.3)))
-            .accessibilityIdentifier("reply-editor-\(reply.threadID)")
+            TextEditor(text: $text)
+                .font(.system(size: 12, design: .monospaced))
+                .frame(minHeight: 48)
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.gray.opacity(0.3)))
+                .accessibilityIdentifier("reply-editor-\(threadID)")
             HStack(spacing: 8) {
-                if reply.retryFailed {
+                if retryFailed {
                     Label("Failed — Retry keeps your text", systemImage: "exclamationmark.triangle")
                         .font(.caption2)
                         .foregroundStyle(.red)
                 }
                 Spacer()
-                if reply.retryFailed {
+                if retryFailed {
                     Button("Edit") {
-                        var e = store.replyEditors[reply.threadID]
+                        var e = store.replyEditors[threadID]
                         e?.retryFailed = false
-                        store.replyEditors[reply.threadID] = e
+                        store.replyEditors[threadID] = e
                     }
                     .font(.caption2)
                 }
-                Button(reply.retryFailed ? "Retry" : "Send") { store.sendReply(threadID: reply.threadID) }
-                    .buttonStyle(.borderedProminent)
-                    .font(.caption2)
-                    .accessibilityIdentifier("reply-send-button-\(reply.threadID)")
-                Button("Cancel") { store.cancelReply(threadID: reply.threadID) }
+                Button(retryFailed ? "Retry" : "Send") {
+                    commitText()
+                    store.sendReply(threadID: threadID)
+                }
+                .buttonStyle(.borderedProminent)
+                .font(.caption2)
+                .accessibilityIdentifier("reply-send-button-\(threadID)")
+                Button("Cancel") { store.cancelReply(threadID: threadID) }
                     .font(.caption2)
             }
         }
         .padding(.leading, 9)
+        .onAppear {
+            // Fresh editor: seed from the store's (empty) body. On a failed
+            // send the editor never disappears, so @State keeps the typed text.
+            if text.isEmpty {
+                text = store.replyEditors[threadID]?.body ?? ""
+            }
+        }
     }
 
-    private var accentColor: SwiftUI.Color {
-        thread.isResolved ? .gray : (thread.isOutdated ? .secondary : .purple)
+    private var retryFailed: Bool {
+        store.replyEditors[threadID]?.retryFailed ?? false
     }
 
-    private func timeAgo(_ date: Date) -> String {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .short
-        return formatter.localizedString(for: date, relativeTo: Date())
+    private func commitText() {
+        var editor = store.replyEditors[threadID]
+        editor?.body = text
+        store.replyEditors[threadID] = editor
     }
 }

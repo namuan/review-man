@@ -52,6 +52,15 @@ public enum Highlighter {
         LanguageDefs.language(for: path)
     }
 
+    /// Compact language identity for cache keys (see `LanguageDefs.languageID`).
+    public static func languageID(for path: String) -> Int? {
+        LanguageDefs.languageID(for: path)
+    }
+
+    public static func language(forID id: Int?) -> Language? {
+        LanguageDefs.language(forID: id)
+    }
+
     public static func tokenize(_ line: String, _ lang: Language?) -> [CodeToken] {
         guard let lang, !line.isEmpty else { return [] }
         let chars = Array(line)

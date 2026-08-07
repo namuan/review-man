@@ -24,12 +24,17 @@ public enum DiffParser {
             renameFrom = nil
         }
 
-        for rawLine in text.components(separatedBy: "\n") {
+        // Iterate lines as Substrings (zero-copy views into `text`) instead of
+        // `components(separatedBy:)`, which materializes a full copy of every
+        // line String while the original payload is still alive. Peak memory
+        // for a multi-megabyte diff drops to roughly (payload + model), not
+        // (payload + line-array + model).
+        for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
             if rawLine.hasPrefix("diff --git ") {
                 flushFile()
                 var f = DiffFile()
-                let rest = String(rawLine.dropFirst("diff --git ".count))
-                if let (a, b) = parseGitPaths(rest) {
+                let rest = rawLine.dropFirst("diff --git ".count)
+                if let (a, b) = parseGitPaths(String(rest)) {
                     f.oldPath = a
                     f.newPath = b
                 }
@@ -97,7 +102,7 @@ public enum DiffParser {
             }
             if rawLine.hasPrefix("@@") {
                 flushHunk()
-                if let parsed = parseHunkHeader(rawLine) {
+                if let parsed = parseHunkHeader(String(rawLine)) {
                     hunk = parsed
                     oldLn = parsed.oldStart
                     newLn = parsed.newStart

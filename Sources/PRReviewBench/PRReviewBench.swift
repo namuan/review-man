@@ -1,5 +1,6 @@
 import Foundation
 import PRReviewKit
+import PRReviewDesktop
 import PRReviewBenchmarkSupport
 
 /// Release-mode headless benchmark for the large-diff acceptance targets.
@@ -78,6 +79,13 @@ private struct RunResult {
     var rowBuild: [Double] = []
     var tokenizeViewport: [Double] = []
     var tokenizeAll: [Double] = []
+    var cacheColdViewport: [Double] = []
+    var cacheWarmViewport: [Double] = []
+    var cacheHitRatio: [Double] = []
+    var presentationBuild: [Double] = []
+    var viewedToggles: [Double] = []
+    var draftMutations: [Double] = []
+    var resolveToggles: [Double] = []
 }
 
 private func summarize(_ samples: [Double]) -> (median: Double, p95: Double, max: Double) {
@@ -148,6 +156,79 @@ struct PRReviewBench {
             results.tokenizeViewport.append(vpTime)
             results.tokenizeAll.append(allTime)
             _ = rowsBuilt
+
+            // Rendered-line cache diagnostics: cold viewport (all misses) vs
+            // the same viewport again (all hits) — the file-switch hot path.
+            let cache = DiffLineCache()
+            let langID = Highlighter.languageID(for: files.first?.path ?? "")
+            let palette = SemanticTheme.light
+            let viewport = Array(files.flatMap { $0.hunks.flatMap { $0.lines } }.prefix(200))
+            let (coldTime, _) = Measurement.time {
+                for l in viewport {
+                    _ = cache.attributedString(for: l, languageID: langID, palette: palette, isDark: false, highContrast: false)
+                }
+            }
+            let (warmTime, _) = Measurement.time {
+                for l in viewport {
+                    _ = cache.attributedString(for: l, languageID: langID, palette: palette, isDark: false, highContrast: false)
+                }
+            }
+            let total = cache.hitCount + cache.missCount
+            results.cacheColdViewport.append(coldTime)
+            results.cacheWarmViewport.append(warmTime)
+            results.cacheHitRatio.append(total > 0 ? Double(cache.hitCount) / Double(total) : 0)
+
+            // Local-mutation scaling: incremental updates must cost far less
+            // than the full presentation build (they rebuild only the affected
+            // file's rows). 200 toggles / 100 draft mutations / 100 resolves.
+            var threads: [PRThread] = []
+            var drafts: [DraftComment] = []
+            let mutationFiles = files.prefix(20)
+            for (i, f) in mutationFiles.enumerated() {
+                threads.append(PRThread(
+                    id: "bench-t-\(i)", path: f.path, line: 1, originalLine: 1, side: "RIGHT",
+                    startLine: nil, startSide: nil, isOutdated: false, isResolved: false,
+                    comments: [PRComment(databaseId: i, author: "a", body: "x", createdAt: Date())]
+                ))
+                drafts.append(DraftComment(path: f.path, line: 1, side: "RIGHT", body: "d"))
+            }
+            let (presentationTime, presentation) = Measurement.time {
+                ReviewPresentation(
+                    endpoint: nil, pr: nil, files: files, threads: threads,
+                    drafts: drafts, viewed: []
+                )
+            }
+            let (viewedTime, _) = Measurement.time {
+                var p = presentation
+                var viewed = Set<String>()
+                for f in files.prefix(200) {
+                    viewed.insert(f.path)
+                    p = p.withViewed(viewed)
+                }
+                _ = p
+            }
+            let (draftTime, _) = Measurement.time {
+                var p = presentation
+                var ds = drafts
+                for i in 0..<100 {
+                    ds.append(DraftComment(path: mutationFiles[i % 20].path, line: 1, side: "RIGHT", body: "m\(i)"))
+                    p = p.withDrafts(ds)
+                }
+                _ = p
+            }
+            let (resolveTime, _) = Measurement.time {
+                var p = presentation
+                for i in 0..<100 {
+                    var t = threads[i % threads.count]
+                    t.isResolved = !t.isResolved
+                    p = p.withThread(t)
+                }
+                _ = p
+            }
+            results.presentationBuild.append(presentationTime)
+            results.viewedToggles.append(viewedTime)
+            results.draftMutations.append(draftTime)
+            results.resolveToggles.append(resolveTime)
         }
         let footprintAfterWork = Measurement.physicalFootprintBytes()
 
@@ -160,7 +241,20 @@ struct PRReviewBench {
                   p95: summarize(results.tokenizeViewport).p95, max: summarize(results.tokenizeViewport).max),
             Stage(name: "highlight all lines (diagnostic)", median: summarize(results.tokenizeAll).median,
                   p95: summarize(results.tokenizeAll).p95, max: summarize(results.tokenizeAll).max),
+            Stage(name: "line cache: cold viewport", median: summarize(results.cacheColdViewport).median,
+                  p95: summarize(results.cacheColdViewport).p95, max: summarize(results.cacheColdViewport).max),
+            Stage(name: "line cache: warm viewport", median: summarize(results.cacheWarmViewport).median,
+                  p95: summarize(results.cacheWarmViewport).p95, max: summarize(results.cacheWarmViewport).max),
+            Stage(name: "presentation build (full)", median: summarize(results.presentationBuild).median,
+                  p95: summarize(results.presentationBuild).p95, max: summarize(results.presentationBuild).max),
+            Stage(name: "200 viewed toggles (incremental)", median: summarize(results.viewedToggles).median,
+                  p95: summarize(results.viewedToggles).p95, max: summarize(results.viewedToggles).max),
+            Stage(name: "100 draft mutations (incremental)", median: summarize(results.draftMutations).median,
+                  p95: summarize(results.draftMutations).p95, max: summarize(results.draftMutations).max),
+            Stage(name: "100 resolve toggles (incremental)", median: summarize(results.resolveToggles).median,
+                  p95: summarize(results.resolveToggles).p95, max: summarize(results.resolveToggles).max),
         ]
+        let cacheHitRatio = results.cacheHitRatio.last ?? 0
 
         let summary: [String: Any] = [
             "machine": machine,
@@ -173,6 +267,7 @@ struct PRReviewBench {
             "parsedLines": parsedLines,
             "totalDisplayRows": totalRows,
             "tokenCount": tokenCount,
+            "cacheHitRatio": cacheHitRatio,
             "footprintMiBAfterGeneration": Measurement.miB(footprintAfterGeneration),
             "footprintMiBAfterWork": Measurement.miB(footprintAfterWork),
             "stages": Dictionary(uniqueKeysWithValues: stages.map { ($0.name, ["median_s": $0.median, "p95_s": $0.p95, "max_s": $0.max]) }),
@@ -196,6 +291,7 @@ struct PRReviewBench {
             print("machine: \(machine) · \(version)")
             print("raw diff: \(text.utf8.count) bytes · generation: \(String(format: "%.3f", genTime))s")
             print("parsed: \(parsedLines) lines · \(hunkCount) hunks · \(fileCount) files · \(totalRows) display rows · \(tokenCount) tokens")
+            print("line cache hit ratio: \(String(format: "%.1f", cacheHitRatio * 100))% on the warm viewport")
             print("footprint: \(String(format: "%.1f", Measurement.miB(footprintAfterGeneration))) MiB after generation · \(String(format: "%.1f", Measurement.miB(footprintAfterWork))) MiB after work")
             print("")
             print("\(pad("stage", 34))\(pad("median", 10))\(pad("p95", 10))\(pad("max", 10))")

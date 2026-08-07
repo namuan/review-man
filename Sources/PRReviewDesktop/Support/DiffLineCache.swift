@@ -23,10 +23,14 @@ public final class DiffLineCache {
         public let highContrast: Bool
         public let kindIndex: Int      // 0 added, 1 removed, 2 context
         public let emphasis: Range<Int>?
-        public let language: Language?
+        /// Compact language identity (`Highlighter.languageID(for:)`) instead
+        /// of the full `Language` value: hashing a small Int is dramatically
+        /// cheaper than hashing keyword sets, and this key is hashed on every
+        /// realized line of every file switch.
+        public let languageID: Int?
         public let content: String
 
-        public init(line: DiffLine, language: Language?, isDark: Bool, highContrast: Bool) {
+        public init(line: DiffLine, languageID: Int?, isDark: Bool, highContrast: Bool) {
             self.isDark = isDark
             self.highContrast = highContrast
             switch line.kind {
@@ -35,7 +39,7 @@ public final class DiffLineCache {
             case .context: self.kindIndex = 2
             }
             self.emphasis = line.emphasis
-            self.language = language
+            self.languageID = languageID
             self.content = line.content
         }
     }
@@ -43,7 +47,10 @@ public final class DiffLineCache {
     private final class Node {
         let key: Key
         var value: AttributedString
-        var prev: Node?
+        /// Weak back-link: the forward `next` chain is the only strong path, so
+        /// nodes cannot form a retain ring with the cache (or with each other)
+        /// even when the cache itself is released without `removeAll()`.
+        weak var prev: Node?
         var next: Node?
         init(key: Key, value: AttributedString) {
             self.key = key
@@ -60,6 +67,16 @@ public final class DiffLineCache {
     public let maxEntries: Int
     public let maxRetainedCharacters: Int
 
+    // MARK: - Diagnostics (for benchmarks and tests)
+
+    /// Number of cache hits since creation (or the last `resetMetrics`).
+    public private(set) var hitCount = 0
+    /// Number of misses (tokenize + attribute) since creation (or the last
+    /// `resetMetrics`).
+    public private(set) var missCount = 0
+    /// Number of entries evicted by the size/character budgets.
+    public private(set) var evictionCount = 0
+
     public init(maxEntries: Int = 32_768, maxRetainedCharacters: Int = 4_000_000) {
         self.maxEntries = maxEntries
         self.maxRetainedCharacters = maxRetainedCharacters
@@ -69,20 +86,23 @@ public final class DiffLineCache {
     /// miss. A hit refreshes LRU recency in O(1).
     public func attributedString(
         for line: DiffLine,
-        language: Language?,
+        languageID: Int?,
         palette: SemanticTheme.Palette,
         isDark: Bool,
         highContrast: Bool
     ) -> AttributedString {
-        let key = Key(line: line, language: language, isDark: isDark, highContrast: highContrast)
+        let key = Key(line: line, languageID: languageID, isDark: isDark, highContrast: highContrast)
         lock.lock()
         if let node = entries[key] {
+            hitCount += 1
             promote(node)
             lock.unlock()
             return node.value
         }
+        missCount += 1
         lock.unlock()
 
+        let language = languageID.flatMap { Highlighter.language(forID: $0) }
         let tokens = Highlighter.tokenize(line.content, language)
         let built = DiffAttributedStringBuilder.build(line: line, tokens: tokens, palette: palette)
 
@@ -100,6 +120,7 @@ public final class DiffLineCache {
             removeNode(oldest)
             entries.removeValue(forKey: oldest.key)
             retainedCharacters -= oldest.key.content.count
+            evictionCount += 1
         }
         lock.unlock()
         return built
@@ -155,6 +176,15 @@ public final class DiffLineCache {
 
     func removeAll() {
         lock.lock()
+        // Unlink every node explicitly (not just head/tail) so the value
+        // payloads are released immediately and no node retains another.
+        var node = head
+        while let n = node {
+            let next = n.next
+            n.prev = nil
+            n.next = nil
+            node = next
+        }
         entries.removeAll()
         head = nil
         tail = nil

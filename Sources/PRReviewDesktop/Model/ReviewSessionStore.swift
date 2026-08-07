@@ -37,8 +37,6 @@ public final class ReviewSessionStore: ObservableObject {
     @Published public var persistenceFailure: PersistenceFailure?
     /// One-shot focus request consumed by the window (commands route here).
     @Published public var requestFocus: ReviewFocusTarget = .none
-    /// The single hovered diff row (Phase 7: one identity, not per-row state).
-    @Published public var hoveredRowID: DiffRowID?
     // Phase 8 dependency health.
     @Published public var _dependencyStatus: GitHubDependencyStatus?
     @Published public var isCheckingDependency = false
@@ -52,6 +50,11 @@ public final class ReviewSessionStore: ObservableObject {
     @Published public var submitEvent: ReviewEvent = .comment
     @Published public var submitBody = ""
     @Published public var submitValidationMessage: String?
+
+    /// The single hovered diff row, observed ONLY by diff-row views. Keeping
+    /// hover outside the store's own @Published surface stops constant mouse
+    /// movement from invalidating the sidebar, header, toolbar, and editors.
+    public let hover = ReviewHoverModel()
 
     public let service: GitHubServing
     public let persistence: ReviewPersisting
@@ -77,6 +80,18 @@ public final class ReviewSessionStore: ObservableObject {
     let preference: GitHubExecutablePreference
     let dependencyRunner: CommandRunning?
 
+    /// Per-file caches for keyboard navigation, lazily built and cleared on
+    /// every load. Recomputing these on every arrow key is the dominant cost
+    /// of holding a key on very large files.
+    var commentableCache: [String: [DiffRowID]] = [:]
+    var hunkIDsCache: [String: [DiffRowID]] = [:]
+    var linePositionCache: [String: [DiffRowID: (hunk: Int, lineIndex: Int)]] = [:]
+    /// Debounced persistence tasks (see `ReviewSessionStoreWorkflows`): rapid
+    /// mutations cancel the pending write and schedule a fresh one, so only
+    /// the final snapshot reaches disk.
+    var pendingDraftSave: Task<Void, Never>?
+    var pendingViewedSave: Task<Void, Never>?
+
     public init(
         service: GitHubServing,
         persistence: ReviewPersisting,
@@ -87,6 +102,18 @@ public final class ReviewSessionStore: ObservableObject {
         self.persistence = persistence
         self.preference = preference
         self.dependencyRunner = dependencyRunner
+    }
+
+    /// When a window closes and releases its store, cancel every in-flight
+    /// task so no ghost work continues after the session is gone. All task
+    /// closures capture `self` weakly, so cancellation is the only cleanup
+    /// needed here.
+    deinit {
+        loadTask?.cancel()
+        refreshTask?.cancel()
+        submitTask?.cancel()
+        pendingDraftSave?.cancel()
+        pendingViewedSave?.cancel()
     }
 
     // MARK: - Loading
@@ -110,12 +137,19 @@ public final class ReviewSessionStore: ObservableObject {
             state = .welcome
         }
         isBusy = false
+        resetDerivedCaches()
     }
 
     private func startLoad(reference: String?, demo: Bool, scale: DemoScale, files: Int? = nil, lines: Int? = nil) {
         loadGeneration += 1
         let generation = loadGeneration
         loadTask?.cancel()
+
+        // A new review invalidates everything derived from the previous one:
+        // rendered lines, navigation indexes, and per-file lookups. The old
+        // cache contents would only pin memory for lines that can never be
+        // requested again.
+        resetDerivedCaches()
 
         lastRequestedReference = demo ? "demo" : reference
         let label = demo ? "demo-\(scale)" : (reference ?? "")
@@ -166,7 +200,8 @@ public final class ReviewSessionStore: ObservableObject {
 
     /// Applies a sidebar selection, retaining it if the file still exists.
     public func select(filePath: String?) {
-        if let path = filePath, review?.files.contains(where: { $0.path == path }) == true {
+        if let path = filePath, let review,
+           review.fileIndexByPath[path] != nil {
             selection.filePath = path
         } else {
             selection.filePath = review?.files.first?.path
@@ -175,17 +210,27 @@ public final class ReviewSessionStore: ObservableObject {
     }
 
     public var selectedFile: DiffFile? {
-        guard let path = selection.filePath else { return nil }
-        return review?.files.first { $0.path == path }
+        guard let path = selection.filePath, let review,
+              let index = review.fileIndexByPath[path] else { return nil }
+        return review.files[index]
     }
 
     public var filteredSidebarItems: [FileSidebarItem] {
         guard let review else { return [] }
         let query = sidebarSearch.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !query.isEmpty else { return review.sidebarItems }
-        return review.sidebarItems.filter {
-            $0.path.lowercased().contains(query)
-                || $0.statusLetter.lowercased() == query
+        return review.sidebarItems.filter { item in
+            // Precomputed lowercase search text (path + status letter) avoids
+            // re-lowercasing every path on every keystroke.
+            item.searchable.contains(query)
         }
+    }
+
+    /// Resets per-review derived caches (rendered lines + navigation indexes).
+    private func resetDerivedCaches() {
+        diffLineCache.removeAll()
+        commentableCache.removeAll()
+        hunkIDsCache.removeAll()
+        linePositionCache.removeAll()
     }
 }

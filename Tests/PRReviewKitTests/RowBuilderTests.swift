@@ -153,4 +153,52 @@ final class RowBuilderTests: XCTestCase {
         XCTAssertEqual(RowBuilder.threadAnchor(right), 2)
         XCTAssertEqual(RowBuilder.threadAnchor(left), 1)
     }
+
+    // MARK: - Indexed (grouped) entry point
+
+    /// The grouped entry point (threads/drafts pre-filtered to the file, with
+    /// anchor indexing) must produce IDENTICAL rows to the legacy filtered
+    /// entry point — the refactor was pure complexity reduction.
+    func testGroupedBuildMatchesFilteredBuild() {
+        let file = makeFile()
+        let threads = [
+            PRThread(id: "t1", path: "Src.swift", line: 3, originalLine: 3, side: "RIGHT",
+                     startLine: nil, startSide: nil, isOutdated: false, isResolved: false,
+                     comments: [PRComment(databaseId: 1, author: "a", body: "a", createdAt: Date())]),
+            PRThread(id: "t2", path: "Src.swift", line: nil, originalLine: 2, side: "LEFT",
+                     startLine: nil, startSide: nil, isOutdated: false, isResolved: false,
+                     comments: [PRComment(databaseId: 2, author: "b", body: "b", createdAt: Date())]),
+            PRThread(id: "t3", path: "Other.swift", line: 1, originalLine: 1, side: "RIGHT",
+                     startLine: nil, startSide: nil, isOutdated: false, isResolved: false,
+                     comments: [PRComment(databaseId: 3, author: "c", body: "c", createdAt: Date())]),
+        ]
+        let drafts = [
+            DraftComment(path: "Src.swift", line: 2, side: "RIGHT", body: "here"),
+            DraftComment(path: "Src.swift", line: 999, side: "RIGHT", body: "lost", isOrphaned: true),
+        ]
+        let filtered = RowBuilder.build(file: file, threads: threads, drafts: drafts, outdatedExpanded: true)
+        let grouped = RowBuilder.build(
+            file: file,
+            fileThreads: threads.filter { $0.path == file.path },
+            fileDrafts: drafts.filter { $0.path == file.path },
+            outdatedExpanded: true
+        )
+        XCTAssertEqual(grouped, filtered)
+    }
+
+    /// Multiple threads/drafts anchored to the SAME line must appear in sorted
+    /// order (line, lastCommentAt / createdAt) right after that line.
+    func testMultipleAttachmentsOnSameLineStaySorted() {
+        let file = makeFile()
+        let early = PRThread(id: "early", path: "Src.swift", line: 3, originalLine: 3, side: "RIGHT",
+                             startLine: nil, startSide: nil, isOutdated: false, isResolved: false,
+                             comments: [PRComment(databaseId: 1, author: "a", body: "a", createdAt: Date(timeIntervalSince1970: 100))])
+        let late = PRThread(id: "late", path: "Src.swift", line: 3, originalLine: 3, side: "RIGHT",
+                            startLine: nil, startSide: nil, isOutdated: false, isResolved: false,
+                            comments: [PRComment(databaseId: 2, author: "b", body: "b", createdAt: Date(timeIntervalSince1970: 200))])
+        let rows = RowBuilder.build(file: file, threads: [late, early], drafts: [], outdatedExpanded: false)
+        let new3Idx = rows.firstIndex(of: .line(hunkIndex: 0, lineIndex: 3))!
+        XCTAssertEqual(rows[new3Idx + 1], .thread(threadID: "early"))
+        XCTAssertEqual(rows[new3Idx + 2], .thread(threadID: "late"))
+    }
 }

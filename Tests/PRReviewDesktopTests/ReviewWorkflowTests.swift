@@ -62,11 +62,13 @@ private final class WorkflowPersistence: ReviewPersisting {
         viewed[key(endpoint, headSHA)] ?? []
     }
     func saveViewed(_ viewed: Set<String>, for endpoint: PREndpoint, headSHA: String) async throws {
+        viewedSaveCount += 1
         self.viewed[key(endpoint, headSHA)] = viewed
     }
     func savedViewed(for ep: PREndpoint, sha: String) -> Set<String>? {
         viewed[key(ep, sha)]
     }
+    private(set) var viewedSaveCount = 0
 }
 
 private func makePRInfo(sha: String = "sha1") -> PRInfo {
@@ -357,6 +359,21 @@ final class ReviewWorkflowTests: XCTestCase {
         store.toggleViewed(filePath: "Src.swift")
         XCTAssertTrue(store.review?.viewed.contains("Src.swift") ?? false)
         waitSync { (persistence.savedViewed(for: ep, sha: "sha1") ?? []).contains("Src.swift") }
+    }
+
+    /// Rapid viewed toggles coalesce into one debounced disk write: the last
+    /// snapshot wins and intermediate writes are skipped.
+    func testViewedTogglesCoalesceIntoOnePersistedWrite() {
+        let (_, persistence, store) = makeRealStore()
+        for i in 0..<5 {
+            store.toggleViewed(filePath: "Src.swift")
+            store.toggleViewed(filePath: "Other.swift\(i)")
+        }
+        // Both writes are debounced; the final disk state reflects the LAST
+        // in-memory snapshot exactly once.
+        waitSync { (persistence.savedViewed(for: ep, sha: "sha1") ?? []).contains("Src.swift") }
+        XCTAssertEqual(persistence.viewedSaveCount, 1, "all rapid toggles coalesce into a single write")
+        XCTAssertTrue(store.review?.viewed.contains("Other.swift4") ?? false)
     }
 
     // MARK: - Submit

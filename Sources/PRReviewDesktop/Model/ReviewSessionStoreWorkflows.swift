@@ -88,29 +88,17 @@ extension ReviewSessionStore {
     }
 
     private var session: SessionData {
-        get {
-            guard let review else { return SessionData() }
-            return SessionData(
-                endpoint: review.endpoint, isDemo: isDemoMode, pr: review.pr,
-                files: review.files, threads: review.threads,
-                drafts: review.drafts, viewed: review.viewed,
-                headSHA: review.pr?.headRefOid ?? ""
-            )
-        }
-        set {
-            publish(session: newValue)
-        }
+        guard let review else { return SessionData() }
+        return SessionData(
+            endpoint: review.endpoint, isDemo: isDemoMode, pr: review.pr,
+            files: review.files, threads: review.threads,
+            drafts: review.drafts, viewed: review.viewed,
+            headSHA: review.pr?.headRefOid ?? ""
+        )
     }
 
     private var isDemoMode: Bool {
         demoSession
-    }
-
-    private func publish(session: SessionData) {
-        review = ReviewPresentation(
-            endpoint: session.endpoint, pr: session.pr, files: session.files,
-            threads: session.threads, drafts: session.drafts, viewed: session.viewed
-        )
     }
 
     // MARK: - Drafts
@@ -185,9 +173,7 @@ extension ReviewSessionStore {
     }
 
     private func applyDraftMutation(_ mutation: DraftMutation, drafts: [DraftComment]) {
-        var session = self.session
-        session.drafts = drafts
-        self.session = session
+        review = review?.withDrafts(drafts)
         recordHistory(mutation)
         persistDrafts()
     }
@@ -217,44 +203,53 @@ extension ReviewSessionStore {
     public func undoDraft() {
         guard let mutation = undoStack.popLast() else { return }
         redoStack.append(mutation)
-        var session = self.session
+        var drafts = review?.drafts ?? []
         if let before = mutation.before {
-            if let index = session.drafts.firstIndex(where: { $0.id == mutation.draftID }) {
-                session.drafts[index] = before
+            if let index = drafts.firstIndex(where: { $0.id == mutation.draftID }) {
+                drafts[index] = before
             } else {
-                session.drafts.append(before)
+                drafts.append(before)
             }
         } else {
-            session.drafts.removeAll { $0.id == mutation.draftID }
+            drafts.removeAll { $0.id == mutation.draftID }
         }
-        self.session = session
+        review = review?.withDrafts(drafts)
         persistDrafts()
     }
 
     public func redoDraft() {
         guard let mutation = redoStack.popLast() else { return }
         undoStack.append(mutation)
-        var session = self.session
+        var drafts = review?.drafts ?? []
         if let after = mutation.after {
-            if let index = session.drafts.firstIndex(where: { $0.id == mutation.draftID }) {
-                session.drafts[index] = after
+            if let index = drafts.firstIndex(where: { $0.id == mutation.draftID }) {
+                drafts[index] = after
             } else {
-                session.drafts.append(after)
+                drafts.append(after)
             }
         } else {
-            session.drafts.removeAll { $0.id == mutation.draftID }
+            drafts.removeAll { $0.id == mutation.draftID }
         }
-        self.session = session
+        review = review?.withDrafts(drafts)
         persistDrafts()
     }
 
-    // MARK: - Persistence
+    // MARK: - Persistence (debounced)
+
+    /// A short debounce so rapid draft/viewed mutations coalesce into one
+    /// filesystem write. The in-memory state updates immediately; only the
+    /// disk write is deferred. The last snapshot always wins. The pending
+    /// tasks are declared on the class (extensions cannot hold stored props).
+    private static let persistDebounceNanos: UInt64 = 150_000_000 // 150 ms
 
     private func persistDrafts() {
         guard let endpoint = session.endpoint, !session.headSHA.isEmpty else { return }
         let drafts = session.drafts
         let headSHA = session.headSHA
-        Task { [weak self] in
+        pendingDraftSave?.cancel()
+        pendingDraftSave = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: Self.persistDebounceNanos)
+            guard !Task.isCancelled else { return }
             do {
                 try await self?.persistence.saveDrafts(drafts, for: endpoint, headSHA: headSHA)
                 self?.persistenceFailure = nil
@@ -269,7 +264,10 @@ extension ReviewSessionStore {
         guard let endpoint = session.endpoint, !session.headSHA.isEmpty else { return }
         let viewed = session.viewed
         let headSHA = session.headSHA
-        Task { [weak self] in
+        pendingViewedSave?.cancel()
+        pendingViewedSave = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: Self.persistDebounceNanos)
+            guard !Task.isCancelled else { return }
             do {
                 try await self?.persistence.saveViewed(viewed, for: endpoint, headSHA: headSHA)
                 self?.persistenceFailure = nil
@@ -284,15 +282,16 @@ extension ReviewSessionStore {
 // MARK: - Viewed
 
 public extension ReviewSessionStore {
-    /// Toggles the local viewed mark for a file path and persists it.
+    /// Toggles the local viewed mark for a file path and persists it. Only the
+    /// sidebar's `isViewed` flags are rebuilt (never the diff rows).
     func toggleViewed(filePath: String) {
-        var session = session
-        if session.viewed.contains(filePath) {
-            session.viewed.remove(filePath)
+        var viewed = review?.viewed ?? []
+        if viewed.contains(filePath) {
+            viewed.remove(filePath)
         } else {
-            session.viewed.insert(filePath)
+            viewed.insert(filePath)
         }
-        self.session = session
+        review = review?.withViewed(viewed)
         persistViewed()
     }
 
@@ -300,19 +299,20 @@ public extension ReviewSessionStore {
 
     /// Toggles a thread's resolved state optimistically, then syncs with
     /// GitHub. A stale failure (superseded by a newer toggle on the same
-    /// thread) is ignored.
+    /// thread) is ignored. Resolving changes no rows (only the thread value),
+    /// so the update stays O(1).
     func toggleResolved(threadID: String) {
-        guard let index = session.threads.firstIndex(where: { $0.id == threadID }) else { return }
-        let thread = session.threads[index]
+        guard let review, let index = review.threads.firstIndex(where: { $0.id == threadID }) else { return }
+        let thread = review.threads[index]
         guard !thread.isOutdated else { return }
         let newState = !thread.isResolved
         let wasResolved = thread.isResolved
 
-        var session = session
-        session.threads[index].isResolved = newState
-        self.session = session
+        var updated = thread
+        updated.isResolved = newState
+        self.review = review.withThread(updated)
 
-        guard let endpoint = session.endpoint, !demoSession else {
+        guard let endpoint = review.endpoint, !demoSession else {
             return
         }
         resolveGenerations[threadID] = (resolveGenerations[threadID] ?? 0) + 1
@@ -326,10 +326,11 @@ public extension ReviewSessionStore {
                 guard let self else { return }
                 self.resolveHandlingCount += 1
                 guard generation == self.resolveGenerations[threadID] else { return }
-                guard let currentIndex = self.session.threads.firstIndex(where: { $0.id == threadID }) else { return }
-                var session = self.session
-                session.threads[currentIndex].isResolved = wasResolved
-                self.session = session
+                guard let currentReview = self.review,
+                      let currentIndex = currentReview.threads.firstIndex(where: { $0.id == threadID }) else { return }
+                var rollback = currentReview.threads[currentIndex]
+                rollback.isResolved = wasResolved
+                self.review = currentReview.withThread(rollback)
                 self.banner = SessionBanner(text: "Resolve failed: \(error)", isError: true)
             }
         }
@@ -359,12 +360,11 @@ public extension ReviewSessionStore {
         guard !body.isEmpty else { return }
 
         if demoSession {
-            if let index = session.threads.firstIndex(where: { $0.id == threadID }) {
-                var session = session
-                session.threads[index].comments.append(
+            if var updated = review?.threads.first(where: { $0.id == threadID }) {
+                updated.comments.append(
                     PRComment(databaseId: 9999, author: "you", body: body, createdAt: Date())
                 )
-                self.session = session
+                review = review?.withThread(updated)
             }
             replyEditors[threadID] = nil
             banner = SessionBanner(text: "Demo: reply added locally.")
@@ -426,9 +426,7 @@ public extension ReviewSessionStore {
         submitState = .submitting
 
         if demoSession {
-            var session = session
-            session.drafts.removeAll { !$0.isOrphaned }
-            self.session = session
+            review = review?.withDrafts(review?.drafts.filter { $0.isOrphaned } ?? [])
             submitState = .hidden
             banner = SessionBanner(text: "Demo mode — review not submitted.")
             return
@@ -446,9 +444,9 @@ public extension ReviewSessionStore {
                 )
                 guard let self else { return }
                 let submitted = result.submitted.drafts
-                var session = self.session
-                session.drafts.removeAll { submitted.contains($0) }
-                self.session = session
+                var drafts = self.review?.drafts ?? []
+                drafts.removeAll { submitted.contains($0) }
+                self.review = self.review?.withDrafts(drafts)
                 self.submitState = .hidden
                 self.banner = SessionBanner(text: "Review submitted.")
                 self.persistDrafts()
@@ -493,19 +491,27 @@ public extension ReviewSessionStore {
                 )
                 try Task.checkCancellation()
                 guard generation == self.refreshGeneration else { return }
-                var session = self.session
-                session.pr = result.bundle.pr
-                session.files = result.bundle.files
-                session.threads = result.bundle.threads
-                session.drafts = result.localState.drafts
-                session.viewed = result.localState.viewed
-                session.headSHA = result.bundle.pr.headRefOid
-                self.session = session
+                let pr = result.bundle.pr
+                let files = result.bundle.files
+                let threads = result.bundle.threads
+                let drafts = result.localState.drafts
+                let viewed = result.localState.viewed
+                // Build the presentation (rows, indexes, sidebar aggregation)
+                // off the main actor; only the finished snapshot is published.
+                let presentation = await Task.detached(priority: .userInitiated) {
+                    ReviewPresentation(
+                        endpoint: endpoint, pr: pr, files: files, threads: threads,
+                        drafts: drafts, viewed: viewed
+                    )
+                }.value
+                try Task.checkCancellation()
+                guard generation == self.refreshGeneration else { return }
+                self.review = presentation
                 // Preserve selection by path; rowID resets (anchor restoration is Phase 9).
-                let kept = anchorPath.map { path in
-                    result.bundle.files.contains { $0.path == path } ? path : nil
-                } ?? nil
-                self.selection = ReviewSelection(filePath: kept ?? result.bundle.files.first?.path)
+                let kept = anchorPath.flatMap { path in
+                    files.contains { $0.path == path } ? path : nil
+                }
+                self.selection = ReviewSelection(filePath: kept ?? files.first?.path)
                 self.banner = SessionBanner(text: result.message)
                 self.isBusy = false
             } catch is CancellationError {
@@ -547,18 +553,28 @@ public extension ReviewSessionStore {
 
 public extension ReviewSessionStore {
     /// Resolves a line row ID back to its (hunk, lineIndex) position in the
-    /// given file by matching kind + old/new anchors.
+    /// given file by matching kind + old/new anchors. Results are cached per
+    /// file (cleared on every load) so repeated command/tap lookups are O(1).
     func linePosition(for rowID: DiffRowID?, in file: DiffFile) -> (hunk: Int, lineIndex: Int)? {
-        guard let rowID, case DiffRowID.line(_, let hunk, let kind, let old, let new) = rowID else {
+        guard let rowID, case DiffRowID.line = rowID else {
             return nil
         }
-        guard hunk < file.hunks.count else { return nil }
-        let lines = file.hunks[hunk].lines
-        for (idx, l) in lines.enumerated()
-        where l.kind == kind && l.oldLine == old && l.newLine == new {
-            return (hunk, idx)
+        if let cached = linePositionCache[file.path] {
+            return cached[rowID]
         }
-        return nil
+        var map: [DiffRowID: (hunk: Int, lineIndex: Int)] = [:]
+        map.reserveCapacity(file.lineCount)
+        for (hi, hunk) in file.hunks.enumerated() {
+            for (idx, l) in hunk.lines.enumerated() {
+                let id = DiffRowID.line(
+                    file: file.path, hunk: hi, kind: l.kind,
+                    old: l.oldLine, new: l.newLine
+                )
+                map[id] = (hi, idx)
+            }
+        }
+        linePositionCache[file.path] = map
+        return map[rowID]
     }
 
     /// The selected diff line position, if the selection is a diff line.
@@ -581,7 +597,7 @@ public extension ReviewSessionStore {
             commentable = DraftRangeValidator.anchor(for: file, hunkIndex: position.hunk, lineIndex: position.lineIndex) != nil
         }
         if loaded, case .thread(let threadID)? = selection.rowID,
-           let thread = review?.threads.first(where: { $0.id == threadID }) {
+           let thread = review?.threadByID[threadID] {
             threadIsActive = !thread.isOutdated
             threadHasRoot = thread.rootCommentID != nil
         }
@@ -602,19 +618,27 @@ public extension ReviewSessionStore {
 
     // MARK: - Diff navigation
 
-    /// Ordered row IDs of commentable diff lines in the selected file.
+    /// Ordered row IDs of commentable diff lines in the selected file. Built
+    /// lazily and cached per file (cleared on every load), so holding an arrow
+    /// key over a very large file never rescans the file per keystroke.
     func commentableLineIDs(in file: DiffFile) -> [DiffRowID] {
-        file.hunks.enumerated().flatMap { hunkIndex, hunk in
-            hunk.lines.enumerated().compactMap { lineIndex, line in
+        if let cached = commentableCache[file.path] {
+            return cached
+        }
+        var ids: [DiffRowID] = []
+        for (hunkIndex, hunk) in file.hunks.enumerated() {
+            for (lineIndex, line) in hunk.lines.enumerated() {
                 guard DraftRangeValidator.anchor(for: file, hunkIndex: hunkIndex, lineIndex: lineIndex) != nil else {
-                    return nil
+                    continue
                 }
-                return DiffRowID.line(
+                ids.append(DiffRowID.line(
                     file: file.path, hunk: hunkIndex, kind: line.kind,
                     old: line.oldLine, new: line.newLine
-                )
+                ))
             }
         }
+        commentableCache[file.path] = ids
+        return ids
     }
 
     /// Moves the line selection by delta among commentable lines.
@@ -637,18 +661,26 @@ public extension ReviewSessionStore {
     private func selectAdjacentFile(_ delta: Int) {
         guard let review, !review.files.isEmpty else { return }
         let current = selection.filePath ?? review.files.first?.path
-        let index = review.files.firstIndex { $0.path == current } ?? 0
+        let index = review.fileIndexByPath[current ?? ""] ?? 0
         let next = min(max(0, index + delta), review.files.count - 1)
         select(filePath: review.files[next].path)
         selection.rowID = nil
     }
 
-    /// Selects the adjacent hunk header row in the current file.
+    /// Selects the adjacent hunk header row in the current file. Hunk IDs are
+    /// derived from the precomputed display rows; ordering by row index makes
+    /// the scan cheap even for very large files.
     func selectAdjacentHunk(_ delta: Int, in file: DiffFile) {
-        let rows = review?.diffRows(for: file) ?? []
-        let hunkIDs = rows.compactMap { row -> DiffRowID? in
-            if case .hunk = row.id { return row.id }
-            return nil
+        let hunkIDs: [DiffRowID]
+        if let cached = hunkIDsCache[file.path] {
+            hunkIDs = cached
+        } else {
+            let rows = review?.diffRows(for: file) ?? []
+            hunkIDs = rows.compactMap { row -> DiffRowID? in
+                if case .hunk = row.id { return row.id }
+                return nil
+            }
+            hunkIDsCache[file.path] = hunkIDs
         }
         guard !hunkIDs.isEmpty else { return }
         let currentIndex = selection.rowID.flatMap { hunkIDs.firstIndex(of: $0) }

@@ -239,17 +239,29 @@ public enum LanguageDefs {
     ]
 
     public static func language(for path: String) -> Language? {
+        languageID(for: path).flatMap { language(forID: $0) }
+    }
+
+    /// The table index of the language for a path, or nil. Compact identity:
+    /// hashing/equating an `Int?` is far cheaper than a full `Language` (which
+    /// carries keyword sets), so rendered-line cache keys use this instead.
+    public static func languageID(for path: String) -> Int? {
         let ext = (path as NSString).pathExtension.lowercased()
         if !ext.isEmpty {
-            for entry in table where entry.extensions.contains(ext) {
-                return entry.language
+            for (i, entry) in table.enumerated() where entry.extensions.contains(ext) {
+                return i
             }
         }
         // dotfiles like .bashrc / .zshrc
         let base = (path as NSString).lastPathComponent.lowercased()
-        for entry in table where entry.extensions.contains(base) {
-            return entry.language
+        for (i, entry) in table.enumerated() where entry.extensions.contains(base) {
+            return i
         }
         return nil
+    }
+
+    public static func language(forID id: Int?) -> Language? {
+        guard let id, id >= 0, id < table.count else { return nil }
+        return table[id].language
     }
 }

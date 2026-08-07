@@ -42,7 +42,12 @@ final class AppCoordinator: ObservableObject {
 
     @Published var pendingOpenReference: String?
 
-    private var stores: [String: ReviewSessionStore] = [:]
+    /// Weak per-window stores: a review window's view hierarchy holds the only
+    /// strong reference to its `ReviewSessionStore`, so when the window closes
+    /// the store (and its tasks and line cache) is released. The next lookup
+    /// for the same key creates a fresh store. Dead entries are pruned on
+    /// every lookup, keeping the dictionary from growing with closed windows.
+    private var stores: [String: WeakStoreBox] = [:]
     private let autoOpenDemoRequest: DemoAutoOpen?
 
     /// Parses the demo launch arguments once. `--demo` opens the offline demo
@@ -91,7 +96,9 @@ final class AppCoordinator: ObservableObject {
 
     func store(for key: String?) -> ReviewSessionStore {
         let resolvedKey = key ?? "default"
-        if let existing = stores[resolvedKey] {
+        // Prune entries whose window has closed (store deallocated).
+        stores = stores.filter { $0.value.store != nil }
+        if let existing = stores[resolvedKey]?.store {
             return existing
         }
         // The preference-backed resolver is shared: a user-selected executable
@@ -103,7 +110,7 @@ final class AppCoordinator: ObservableObject {
             persistence: ReviewPersistence.shared,
             preference: preference
         )
-        stores[resolvedKey] = store
+        stores[resolvedKey] = WeakStoreBox(store)
         return store
     }
 
@@ -150,4 +157,13 @@ private struct DemoAutoOpen {
     let scale: DemoScale
     let files: Int?
     let lines: Int?
+}
+
+/// Holds a store weakly so `AppCoordinator` never keeps a closed window's
+/// session (and its rendered-line cache and tasks) alive.
+private final class WeakStoreBox {
+    weak var store: ReviewSessionStore?
+    init(_ store: ReviewSessionStore) {
+        self.store = store
+    }
 }

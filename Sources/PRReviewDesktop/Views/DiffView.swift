@@ -6,35 +6,42 @@ import PRReviewKit
 public struct DiffView: View {
     @ObservedObject public var store: ReviewSessionStore
     public let file: DiffFile
+    /// Compact language identity for the whole file (cache key). Resolved once
+    /// per body evaluation instead of once per line.
+    private let languageID: Int?
 
     public init(store: ReviewSessionStore, file: DiffFile) {
         self.store = store
         self.file = file
+        self.languageID = Highlighter.languageID(for: file.path)
     }
 
+    @ViewBuilder
     public var body: some View {
         if file.isBinary {
-            return AnyView(EmptyStateView(
+            EmptyStateView(
                 icon: "doc.zipper",
                 title: "Binary file",
                 message: "\(file.path) cannot be displayed as a diff."
-            ).accessibilityIdentifier("binary-file-state"))
-        }
-        if file.tooLarge {
-            return AnyView(EmptyStateView(
+            )
+            .accessibilityIdentifier("binary-file-state")
+        } else if file.tooLarge {
+            EmptyStateView(
                 icon: "exclamationmark.triangle",
                 title: "Diff too large",
                 message: "\(file.path) exceeded the fetch limit and its patch is unavailable."
-            ).accessibilityIdentifier("too-large-file-state"))
-        }
-        if file.hunks.isEmpty {
-            return AnyView(EmptyStateView(
+            )
+            .accessibilityIdentifier("too-large-file-state")
+        } else if file.hunks.isEmpty {
+            EmptyStateView(
                 icon: "doc",
                 title: "No changes in this file",
                 message: "\(file.path) has no textual changes to display."
-            ).accessibilityIdentifier("empty-file-state"))
+            )
+            .accessibilityIdentifier("empty-file-state")
+        } else {
+            diffScroll
         }
-        return AnyView(diffScroll)
     }
 
     private var diffScroll: some View {
@@ -55,7 +62,7 @@ public struct DiffView: View {
                     ScrollView(.horizontal) {
                         LazyVStack(alignment: .leading, spacing: 0) {
                             ForEach(rows) { displayRow in
-                                DiffRowView(store: store, file: file, displayRow: displayRow)
+                                DiffRowView(store: store, file: file, displayRow: displayRow, languageID: languageID)
                                     .frame(minWidth: geo.size.width, alignment: .leading)
                                     .id(displayRow.id)
                             }

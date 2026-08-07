@@ -2,15 +2,22 @@ import SwiftUI
 import PRReviewKit
 
 /// Inline draft comment editor (new or editing an existing draft).
+///
+/// The text lives in local `@State` so keystrokes never publish the session
+/// store (which would re-render the sidebar, header, and every realized diff
+/// row per keystroke). The text is committed to the store on Save; Cancel
+/// discards it.
 public struct DraftEditorView: View {
     @ObservedObject public var store: ReviewSessionStore
     public let editor: DraftEditorState
 
+    @State private var text: String
     @FocusState private var focused: Bool
 
     public init(store: ReviewSessionStore, editor: DraftEditorState) {
         self.store = store
         self.editor = editor
+        self._text = State(initialValue: editor.text)
     }
 
     public var body: some View {
@@ -18,30 +25,26 @@ public struct DraftEditorView: View {
             Text(title)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
-            TextEditor(text: Binding(
-                get: { store.draftEditor?.text ?? "" },
-                set: { newValue in
-                    var editor = store.draftEditor
-                    editor?.text = newValue
-                    store.draftEditor = editor
-                }
-            ))
-            .font(.system(size: 12, design: .monospaced))
-            .frame(minHeight: 60, maxHeight: 140)
-            .focused($focused)
-            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.gray.opacity(0.3)))
-            .onAppear { focused = true }
-            .accessibilityIdentifier("draft-editor")
+            TextEditor(text: $text)
+                .font(.system(size: 12, design: .monospaced))
+                .frame(minHeight: 60, maxHeight: 140)
+                .focused($focused)
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.gray.opacity(0.3)))
+                .onAppear { focused = true }
+                .accessibilityIdentifier("draft-editor")
             HStack(spacing: 8) {
-                Button("Save") { store.saveDraftEditor() }
-                    .buttonStyle(.borderedProminent)
-                    .accessibilityIdentifier("draft-save-button")
+                Button("Save") {
+                    commitText()
+                    store.saveDraftEditor()
+                }
+                .buttonStyle(.borderedProminent)
+                .accessibilityIdentifier("draft-save-button")
                 Button("Cancel") { store.cancelDraftEditor() }
                     .accessibilityIdentifier("draft-cancel-button")
                 Spacer()
                 if editor.draftID != nil {
                     Button("Delete") {
-                        if let draft = store.review?.drafts.first(where: { $0.id == editor.draftID }) {
+                        if let id = editor.draftID, let draft = store.review?.draftByID[id] {
                             store.cancelDraftEditor()
                             store.deleteDraft(draft)
                         }
@@ -56,6 +59,14 @@ public struct DraftEditorView: View {
         .accessibilityElement(children: .contain)
     }
 
+    /// Pushes the local text into the store once, right before Save so the
+    /// store's save logic (create/edit/delete) sees exactly what was typed.
+    private func commitText() {
+        var updated = store.draftEditor
+        updated?.text = text
+        store.draftEditor = updated
+    }
+
     private var title: String {
         if let start = editor.startLine, start != editor.line {
             return "Comment on \(editor.path):\(start)–\(editor.line) (\(editor.side))"
@@ -66,9 +77,14 @@ public struct DraftEditorView: View {
 
 /// Submit-review sheet: event picker, summary, included-draft list, and
 /// validation/uncertain messaging.
+///
+/// The summary text lives in local `@State` (committed to the store only when
+/// Submit is pressed) so typing never invalidates the whole session.
 public struct SubmitReviewView: View {
     @ObservedObject public var store: ReviewSessionStore
     @Environment(\.dismiss) private var dismiss
+
+    @State private var summary = ""
 
     public init(store: ReviewSessionStore) {
         self.store = store
@@ -89,7 +105,7 @@ public struct SubmitReviewView: View {
 
             Text("Summary")
                 .font(.caption)
-            TextEditor(text: $store.submitBody)
+            TextEditor(text: $summary)
                 .font(.system(size: 12, design: .monospaced))
                 .frame(height: 60)
                 .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.gray.opacity(0.3)))
@@ -133,14 +149,21 @@ public struct SubmitReviewView: View {
                     dismiss()
                 }
                 Spacer()
-                Button("Submit") { store.submitReview() }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(store.submitState == .submitting)
-                    .accessibilityIdentifier("submit-button")
+                Button("Submit") {
+                    store.submitBody = summary
+                    store.submitReview()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(store.submitState == .submitting)
+                .accessibilityIdentifier("submit-button")
             }
         }
         .padding(20)
         .frame(width: 420)
         .accessibilityElement(children: .contain)
+        .onAppear {
+            // A fresh sheet always starts from the store's (reset) summary.
+            summary = store.submitBody
+        }
     }
 }

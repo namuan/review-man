@@ -237,6 +237,41 @@ final class ReviewSessionStoreTests: XCTestCase {
 
     // MARK: - Row identity
 
+    /// Closing a review window releases the store AND its rendered-line cache:
+    /// the store holds the only strong reference to the cache, and the load
+    /// tasks capture the store weakly, so nothing pins either after the last
+    /// view reference drops. (In the app, the view hierarchy holds the store;
+    /// here we drop it directly.)
+    func testStoreAndLineCacheAreReleasedWhenDropped() async {
+        weak var weakStore: ReviewSessionStore?
+        weak var weakCache: DiffLineCache?
+        autoreleasepool {
+            let store = ReviewSessionStore(service: FakeService(), persistence: InMemoryPersistence())
+            // Fill the line cache so the dealloc assertion actually exercises
+            // the node links (the retain-cycle regression).
+            let langID = Highlighter.languageID(for: "a.swift")
+            for i in 0..<50 {
+                _ = store.diffLineCache.attributedString(
+                    for: DiffLine(kind: .added, content: "line \(i) content", oldLine: nil, newLine: i),
+                    languageID: langID, palette: SemanticTheme.light,
+                    isDark: false, highContrast: false
+                )
+            }
+            weakStore = store
+            weakCache = store.diffLineCache
+            XCTAssertTrue(store.diffLineCache.entryCount > 0, "cache must be populated before the dealloc check")
+        }
+        // Flush autorelease pools / let the main run loop settle.
+        var drained = 0
+        while (weakStore != nil || weakCache != nil) && drained < 30 {
+            drained += 1
+            await Task.yield()
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertNil(weakStore, "store must deallocate when the last view reference drops")
+        XCTAssertNil(weakCache, "store must release its line cache (no retain cycle)")
+    }
+
     func testDiffRowIDsAreStableAndDistinguishAnchors() throws {
         let files = DiffParser.parse(sampleDiff)
         let a = ReviewPresentation(endpoint: nil, pr: nil, files: files, threads: [], drafts: [], viewed: [])

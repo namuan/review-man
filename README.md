@@ -162,9 +162,10 @@ open "build/PR Review.app" --args --demo --demo-files 500 --demo-lines 60000
 ## Testing
 
 ```sh
-swift test   # 156 unit tests: diff parser, word diff, highlighter, row/payload
+swift test   # 177 unit tests: diff parser, word diff, highlighter, row/payload
              # builders, draft persistence, async cancellation + ordering,
              # head-SHA migration + orphans, syntax cache, dependency health,
+             # incremental presentation updates, cache lifecycle + metrics,
              # desktop store/workflows/commands, launcher + URL handling
 ```
 

@@ -8,11 +8,14 @@ public struct DiffRowView: View {
     @ObservedObject public var store: ReviewSessionStore
     public let file: DiffFile
     public let displayRow: DiffDisplayRow
+    /// Compact language identity, resolved once per file in `DiffView`.
+    public let languageID: Int?
 
-    public init(store: ReviewSessionStore, file: DiffFile, displayRow: DiffDisplayRow) {
+    public init(store: ReviewSessionStore, file: DiffFile, displayRow: DiffDisplayRow, languageID: Int?) {
         self.store = store
         self.file = file
         self.displayRow = displayRow
+        self.languageID = languageID
     }
 
     public var body: some View {
@@ -43,11 +46,7 @@ public struct DiffRowView: View {
         return editor.path == file.path && editor.line == lineNum
     }
 
-    private var gutterOffset: CGFloat {
-        guard let review = store.review else { return 8 }
-        _ = review
-        return 150
-    }
+    private var gutterOffset: CGFloat { 150 }
 
     @ViewBuilder
     private var rowContent: some View {
@@ -55,15 +54,15 @@ public struct DiffRowView: View {
         case .hunkHeader(let hunkIndex):
             HunkHeaderView(hunk: file.hunks[hunkIndex])
         case .line(let hunkIndex, let lineIndex):
-            DiffLineView(store: store, file: file, hunkIndex: hunkIndex, lineIndex: lineIndex)
+            DiffLineView(store: store, file: file, hunkIndex: hunkIndex, lineIndex: lineIndex, languageID: languageID)
         case .thread(let threadID):
-            if let thread = store.review?.threads.first(where: { $0.id == threadID }) {
+            if let thread = store.review?.threadByID[threadID] {
                 ThreadCardView(store: store, thread: thread)
             } else {
                 EmptyView()
             }
         case .draft(let draftID):
-            if let draft = store.review?.drafts.first(where: { $0.id == draftID }) {
+            if let draft = store.review?.draftByID[draftID] {
                 draftCard(draft)
             } else {
                 EmptyView()
