@@ -17,6 +17,11 @@ public protocol ReviewPersisting {
     func saveDrafts(_ drafts: [DraftComment], for endpoint: PREndpoint, headSHA: String) async throws
     func loadViewed(for endpoint: PREndpoint, headSHA: String) async throws -> Set<String>
     func saveViewed(_ viewed: Set<String>, for endpoint: PREndpoint, headSHA: String) async throws
+    /// Hidden reviewer names, keyed per pull request (NOT per head SHA): the
+    /// user's hide choices survive head changes and refreshes, unlike the
+    /// head-SHA-scoped drafts and viewed marks.
+    func loadHiddenReviewers(for endpoint: PREndpoint) async throws -> Set<String>
+    func saveHiddenReviewers(_ hidden: Set<String>, for endpoint: PREndpoint) async throws
 }
 
 public extension ReviewPersisting {

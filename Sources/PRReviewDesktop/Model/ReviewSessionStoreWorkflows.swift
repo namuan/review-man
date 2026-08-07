@@ -84,6 +84,7 @@ extension ReviewSessionStore {
         var threads: [PRThread] = []
         var drafts: [DraftComment] = []
         var viewed: Set<String> = []
+        var hiddenReviewers: Set<String> = []
         var headSHA = ""
     }
 
@@ -93,6 +94,7 @@ extension ReviewSessionStore {
             endpoint: review.endpoint, isDemo: isDemoMode, pr: review.pr,
             files: review.files, threads: review.threads,
             drafts: review.drafts, viewed: review.viewed,
+            hiddenReviewers: review.hiddenReviewers,
             headSHA: review.pr?.headRefOid ?? ""
         )
     }
@@ -276,6 +278,80 @@ extension ReviewSessionStore {
                 self?.banner = SessionBanner(text: "Could not save local viewed marks. Changes remain in memory.", isError: true)
             }
         }
+    }
+
+    private func persistHiddenReviewers() {
+        guard let endpoint = session.endpoint else { return }
+        let hidden = session.hiddenReviewers
+        pendingHiddenReviewersSave?.cancel()
+        pendingHiddenReviewersSave = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: Self.persistDebounceNanos)
+            guard !Task.isCancelled else { return }
+            do {
+                try await self?.persistence.saveHiddenReviewers(hidden, for: endpoint)
+                self?.persistenceFailure = nil
+            } catch {
+                self?.persistenceFailure = PersistenceFailure(operation: "hidden reviewers", message: "\(error)")
+                self?.banner = SessionBanner(text: "Could not save hidden reviewer state. Changes remain in memory.", isError: true)
+            }
+        }
+    }
+}
+
+// MARK: - Hidden reviewers
+
+public extension ReviewSessionStore {
+
+    /// The set of comment authors whose threads are currently hidden.
+    var hiddenReviewers: Set<String> {
+        review?.hiddenReviewers ?? []
+    }
+
+    /// Distinct comment authors across ALL threads (visible or hidden),
+    /// alphabetized. The toolbar and menus use this list to offer hide and
+    /// unhide for every participant.
+    var reviewerNames: [String] {
+        guard let review else { return [] }
+        var names = Set<String>()
+        for thread in review.threads {
+            for comment in thread.comments where !comment.author.isEmpty {
+                names.insert(comment.author)
+            }
+        }
+        return names.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
+    /// Hides every thread that contains a comment by this author.
+    func hideReviewer(_ name: String) {
+        guard !name.isEmpty else { return }
+        applyHiddenReviewers((review?.hiddenReviewers ?? []).union([name]))
+    }
+
+    func unhideReviewer(_ name: String) {
+        guard !name.isEmpty else { return }
+        applyHiddenReviewers((review?.hiddenReviewers ?? []).subtracting([name]))
+    }
+
+    func unhideAllReviewers() {
+        guard let review, !review.hiddenReviewers.isEmpty else { return }
+        applyHiddenReviewers([])
+    }
+
+    /// Applies a new hidden set and cleans up anything pointing at threads
+    /// that just became invisible: the row selection and open reply editors.
+    private func applyHiddenReviewers(_ hidden: Set<String>) {
+        guard let review else { return }
+        self.review = review.withHiddenReviewers(hidden)
+        if case .thread(let threadID)? = selection.rowID,
+           let thread = self.review?.threadByID[threadID],
+           thread.comments.contains(where: { hidden.contains($0.author) }) {
+            selection.rowID = nil
+        }
+        replyEditors = replyEditors.filter { threadID, _ in
+            guard let thread = self.review?.threadByID[threadID] else { return false }
+            return !thread.comments.contains(where: { hidden.contains($0.author) })
+        }
+        persistHiddenReviewers()
     }
 }
 
@@ -486,7 +562,8 @@ public extension ReviewSessionStore {
                 let result = try await operations.migrate(
                     bundle: bundle, endpoint: endpoint,
                     current: ReviewLocalState(
-                        headSHA: snapshot.headSHA, drafts: snapshot.drafts, viewed: snapshot.viewed
+                        headSHA: snapshot.headSHA, drafts: snapshot.drafts, viewed: snapshot.viewed,
+                        hiddenReviewers: snapshot.hiddenReviewers
                     )
                 )
                 try Task.checkCancellation()
@@ -496,12 +573,13 @@ public extension ReviewSessionStore {
                 let threads = result.bundle.threads
                 let drafts = result.localState.drafts
                 let viewed = result.localState.viewed
+                let hiddenReviewers = result.localState.hiddenReviewers
                 // Build the presentation (rows, indexes, sidebar aggregation)
                 // off the main actor; only the finished snapshot is published.
                 let presentation = await Task.detached(priority: .userInitiated) {
                     ReviewPresentation(
                         endpoint: endpoint, pr: pr, files: files, threads: threads,
-                        drafts: drafts, viewed: viewed
+                        drafts: drafts, viewed: viewed, hiddenReviewers: hiddenReviewers
                     )
                 }.value
                 try Task.checkCancellation()
@@ -612,7 +690,9 @@ public extension ReviewSessionStore {
             submitHidden: submitState == .hidden,
             isSubmitting: submitState == .submitting,
             canSubmit: true,   // body-only reviews are valid; availability gates on .loaded
-            hasPRURL: ReviewUtilities.pullRequestURL(session.pr?.url) != nil
+            hasPRURL: ReviewUtilities.pullRequestURL(session.pr?.url) != nil,
+            hasReviewers: !reviewerNames.isEmpty,
+            hasHiddenReviewers: !(review?.hiddenReviewers.isEmpty ?? true)
         )
     }
 

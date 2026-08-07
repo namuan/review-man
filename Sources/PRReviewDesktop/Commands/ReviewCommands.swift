@@ -89,6 +89,26 @@ public struct ReviewCommands: Commands {
 
             Divider()
 
+            Menu("Hide Comments by…") {
+                if let names = focusedStore?.reviewerNames, !names.isEmpty {
+                    ForEach(names, id: \.self) { name in
+                        Button(name) {
+                            focusedStore?.hideReviewer(name)
+                        }
+                    }
+                } else {
+                    Text("No commenters yet")
+                }
+            }
+            .disabled(!availability.canHideReviewer)
+
+            Button("Show Hidden Comments") {
+                focusedStore?.unhideAllReviewers()
+            }
+            .disabled(!availability.canShowHiddenComments)
+
+            Divider()
+
             Button("Submit Review…") {
                 focusedStore?.requestFocus = .submitSheet
                 NotificationCenter.default.post(name: .reviewSubmitRequest, object: focusedStore)

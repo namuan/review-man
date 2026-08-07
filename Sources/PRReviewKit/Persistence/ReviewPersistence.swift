@@ -55,12 +55,23 @@ public actor ReviewPersistence: ReviewPersisting {
             .replacingOccurrences(of: "/", with: "_")
     }
 
+    /// PR-scoped key (no SHA): hidden-reviewer state is intentionally shared
+    /// across head changes for the same pull request.
+    nonisolated func key(_ endpoint: PREndpoint) -> String {
+        "\(endpoint.owner)_\(endpoint.repo)_\(endpoint.number)"
+            .replacingOccurrences(of: "/", with: "_")
+    }
+
     nonisolated func draftsFileName(_ endpoint: PREndpoint, sha: String) -> String {
         "drafts-\(key(endpoint, sha: sha)).json"
     }
 
     nonisolated func viewedFileName(_ endpoint: PREndpoint, sha: String) -> String {
         "viewed-\(key(endpoint, sha: sha)).json"
+    }
+
+    nonisolated func hiddenReviewersFileName(_ endpoint: PREndpoint) -> String {
+        "hidden-reviewers-\(key(endpoint)).json"
     }
 
     // MARK: - Drafts
@@ -122,6 +133,33 @@ public actor ReviewPersistence: ReviewPersisting {
             data = try JSONEncoder().encode(viewed.sorted())
         } catch {
             throw PersistenceError.saveFailed("encoding viewed marks: \(error)")
+        }
+        try atomicWrite(data, to: url)
+    }
+
+    // MARK: - Hidden reviewers
+
+    public func loadHiddenReviewers(for endpoint: PREndpoint) async throws -> Set<String> {
+        let url = directory.appendingPathComponent(hiddenReviewersFileName(endpoint))
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: url.path) else { return [] }
+        guard let data = fm.contents(atPath: url.path) else {
+            throw PersistenceError.loadFailed("could not read \(url.lastPathComponent)")
+        }
+        do {
+            return Set(try JSONDecoder().decode([String].self, from: data))
+        } catch {
+            throw PersistenceError.loadFailed("malformed \(url.lastPathComponent): \(error)")
+        }
+    }
+
+    public func saveHiddenReviewers(_ hidden: Set<String>, for endpoint: PREndpoint) async throws {
+        let url = directory.appendingPathComponent(hiddenReviewersFileName(endpoint))
+        let data: Data
+        do {
+            data = try JSONEncoder().encode(hidden.sorted())
+        } catch {
+            throw PersistenceError.saveFailed("encoding hidden reviewers: \(error)")
         }
         try atomicWrite(data, to: url)
     }

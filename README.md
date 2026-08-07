@@ -93,6 +93,12 @@ pr-review --version                                # version
   language and content with bounded growth.
 - **Inline comment threads** anchored to their lines, with LEFT-side (deleted
   line) support, resolved state, and outdated-thread sections.
+- **Hide comments by reviewer**: hide every thread that any given comment
+  author participated in, from the thread's context menu, the toolbar filter
+  menu, or the Review menu. Hidden threads vanish from the diff and sidebar
+  counts; a header strip lists hidden reviewers with one-click restore. The
+  preference is local and keyed per pull request (it survives head changes and
+  restarts).
 - **Draft comments** with multi-line editing, multi-line range comments, and
   **automatic persistence to disk** — drafts survive crashes and restarts and
   survive head-SHA changes (valid anchors are kept, invalid ones are marked

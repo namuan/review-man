@@ -1,15 +1,19 @@
 import Foundation
 
 /// Local review state (drafts + viewed marks) for the current head SHA.
+/// `hiddenReviewers` is PR-scoped (independent of the head SHA): it rides
+/// along so refreshes carry it through, but migration never resets it.
 public struct ReviewLocalState {
     public var headSHA: String
     public var drafts: [DraftComment]
     public var viewed: Set<String>
+    public var hiddenReviewers: Set<String>
 
-    public init(headSHA: String, drafts: [DraftComment], viewed: Set<String>) {
+    public init(headSHA: String, drafts: [DraftComment], viewed: Set<String>, hiddenReviewers: Set<String> = []) {
         self.headSHA = headSHA
         self.drafts = drafts
         self.viewed = viewed
+        self.hiddenReviewers = hiddenReviewers
     }
 }
 
@@ -89,10 +93,15 @@ public struct ReviewOperations {
             case .present(let existing): drafts = existing
             }
             let viewed = try await persistence.loadViewed(for: endpoint, headSHA: newSHA)
+            // Hidden reviewers are PR-scoped: loaded once, never reset by a head change.
+            let hiddenReviewers = try await persistence.loadHiddenReviewers(for: endpoint)
             let validated = DraftAnchorValidator.revalidated(drafts, against: bundle.files)
             return RefreshResult(
                 bundle: bundle,
-                localState: ReviewLocalState(headSHA: newSHA, drafts: validated, viewed: viewed),
+                localState: ReviewLocalState(
+                    headSHA: newSHA, drafts: validated, viewed: viewed,
+                    hiddenReviewers: hiddenReviewers
+                ),
                 message: "Refreshed."
             )
         }
@@ -101,7 +110,10 @@ public struct ReviewOperations {
             let validated = DraftAnchorValidator.revalidated(current.drafts, against: bundle.files)
             return RefreshResult(
                 bundle: bundle,
-                localState: ReviewLocalState(headSHA: newSHA, drafts: validated, viewed: current.viewed),
+                localState: ReviewLocalState(
+                    headSHA: newSHA, drafts: validated, viewed: current.viewed,
+                    hiddenReviewers: current.hiddenReviewers
+                ),
                 message: "Refreshed."
             )
         }
@@ -122,6 +134,8 @@ public struct ReviewOperations {
             try await persistence.saveDrafts(drafts, for: endpoint, headSHA: newSHA)
         }
         try await persistence.saveViewed([], for: endpoint, headSHA: newSHA)
+        // Hidden reviewers are PR-scoped and intentionally survive the head
+        // change unchanged (no save here; the in-memory set is authoritative).
 
         let validated = DraftAnchorValidator.revalidated(drafts, against: bundle.files)
         let orphanCount = validated.filter { $0.isOrphaned }.count
@@ -137,7 +151,10 @@ public struct ReviewOperations {
         }
         return RefreshResult(
             bundle: bundle,
-            localState: ReviewLocalState(headSHA: newSHA, drafts: validated, viewed: []),
+            localState: ReviewLocalState(
+                headSHA: newSHA, drafts: validated, viewed: [],
+                hiddenReviewers: current.hiddenReviewers
+            ),
             message: message
         )
     }

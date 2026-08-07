@@ -138,6 +138,39 @@ public struct ReviewWindowView: View {
                 .disabled(!availability.canToggleViewed)
                 .help("Toggle viewed state")
                 .accessibilityIdentifier("toolbar-viewed")
+                Menu {
+                    let names = store.reviewerNames
+                    if names.isEmpty {
+                        Text("No commenters yet")
+                    } else {
+                        ForEach(names, id: \.self) { name in
+                            Button {
+                                if store.hiddenReviewers.contains(name) {
+                                    store.unhideReviewer(name)
+                                } else {
+                                    store.hideReviewer(name)
+                                }
+                            } label: {
+                                if store.hiddenReviewers.contains(name) {
+                                    Label(name, systemImage: "checkmark")
+                                } else {
+                                    Text(name)
+                                }
+                            }
+                        }
+                    }
+                    if !store.hiddenReviewers.isEmpty {
+                        Divider()
+                        Button("Show All Comments") { store.unhideAllReviewers() }
+                    }
+                } label: {
+                    Label("Filter Comments", systemImage: store.hiddenReviewers.isEmpty ? "eye" : "eye.slash")
+                }
+                .disabled(!availability.canHideReviewer)
+                .help(store.hiddenReviewers.isEmpty
+                    ? "Hide comments by a reviewer"
+                    : "\(store.hiddenReviewers.count) reviewer(s) hidden — adjust the comment filter")
+                .accessibilityIdentifier("toolbar-filter-comments")
                 Button {
                     if let file = store.selectedFile, let position = store.selectedLinePosition(in: file) {
                         _ = store.copyLineToClipboard(file: file, hunkIndex: position.hunk, lineIndex: position.lineIndex)
@@ -225,6 +258,9 @@ public struct ReviewWindowView: View {
         if let review = store.review {
             VStack(spacing: 0) {
                 PullRequestHeaderView(review: review)
+                if !review.hiddenReviewers.isEmpty {
+                    hiddenReviewersStrip(review)
+                }
                 Divider()
                 if store.state == .empty {
                     EmptyStateView(
@@ -248,6 +284,26 @@ public struct ReviewWindowView: View {
         } else {
             EmptyStateView(icon: "questionmark.circle", title: "Nothing loaded", message: "")
         }
+    }
+
+    private func hiddenReviewersStrip(_ review: ReviewPresentation) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "eye.slash")
+                .foregroundStyle(.secondary)
+            Text("Comments by \(review.hiddenReviewers.sorted().joined(separator: ", ")) hidden")
+                .font(.caption)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer()
+            Button("Show All") { store.unhideAllReviewers() }
+                .font(.caption)
+                .accessibilityIdentifier("hidden-reviewers-show-all")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 4)
+        .background(SwiftUI.Color.orange.opacity(0.08))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("hidden-reviewers-strip")
     }
 
     private func bannerBar(_ banner: SessionBanner) -> some View {

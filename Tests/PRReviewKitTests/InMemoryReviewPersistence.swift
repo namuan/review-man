@@ -10,11 +10,16 @@ final class InMemoryReviewPersistence: ReviewPersisting {
     private var draftsByKey: [String: [DraftComment]] = [:]
     private var presentDraftFiles = Set<String>()
     private var viewedByKey: [String: Set<String>] = [:]
+    private var hiddenReviewersByPR: [String: Set<String>] = [:]
     /// When set, every operation throws it.
     var failure: Error?
 
     private func key(_ endpoint: PREndpoint, _ sha: String) -> String {
         "\(endpoint.owner)/\(endpoint.repo)#\(endpoint.number)@\(sha)"
+    }
+
+    private func prKey(_ endpoint: PREndpoint) -> String {
+        "\(endpoint.owner)/\(endpoint.repo)#\(endpoint.number)"
     }
 
     func loadDraftState(for endpoint: PREndpoint, headSHA: String) async throws -> PersistedDraftState {
@@ -47,7 +52,25 @@ final class InMemoryReviewPersistence: ReviewPersisting {
         lock.unlock()
     }
 
+    func loadHiddenReviewers(for endpoint: PREndpoint) async throws -> Set<String> {
+        if let failure { throw failure }
+        return hiddenReviewersByPR[prKey(endpoint)] ?? []
+    }
+
+    func saveHiddenReviewers(_ hidden: Set<String>, for endpoint: PREndpoint) async throws {
+        if let failure { throw failure }
+        lock.withLock {
+            hiddenReviewersByPR[prKey(endpoint)] = hidden
+        }
+    }
+
     // MARK: - Test observations
+
+    func savedHiddenReviewers(for endpoint: PREndpoint) -> Set<String>? {
+        lock.lock()
+        defer { lock.unlock() }
+        return hiddenReviewersByPR[prKey(endpoint)]
+    }
 
     func savedDrafts(for endpoint: PREndpoint, sha: String) -> [DraftComment]? {
         lock.lock()

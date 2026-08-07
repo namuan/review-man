@@ -35,6 +35,31 @@ final class ReviewCommandTests: XCTestCase {
         XCTAssertFalse(a.canResolve, "no thread selected")
     }
 
+    func testAvailabilityForHiddenReviewerActions() {
+        let context = ReviewCommandContext(
+            state: .loaded, isDemo: false, hasSelectedFile: false,
+            hasCommentableSelection: false, selectedThreadIsActive: false,
+            selectedThreadHasRootComment: false, canUndo: false, canRedo: false,
+            draftEditorOpen: false, submitHidden: true, isSubmitting: false,
+            canSubmit: true, hasPRURL: true,
+            hasReviewers: true, hasHiddenReviewers: true
+        )
+        let a = ReviewCommandAvailability(context: context)
+        XCTAssertTrue(a.canHideReviewer)
+        XCTAssertTrue(a.canShowHiddenComments)
+
+        // Defaults: no commenters and nothing hidden gate both actions off.
+        let none = ReviewCommandAvailability(context: ReviewCommandContext(
+            state: .loaded, isDemo: false, hasSelectedFile: false,
+            hasCommentableSelection: false, selectedThreadIsActive: false,
+            selectedThreadHasRootComment: false, canUndo: false, canRedo: false,
+            draftEditorOpen: false, submitHidden: true, isSubmitting: false,
+            canSubmit: true, hasPRURL: true
+        ))
+        XCTAssertFalse(none.canHideReviewer)
+        XCTAssertFalse(none.canShowHiddenComments)
+    }
+
     func testAvailabilityGatesByStateAndEditors() {
         // Welcome state disables review actions.
         let welcome = ReviewCommandAvailability(context: ReviewCommandContext(
@@ -183,6 +208,8 @@ private final class InMemoryPersistence: ReviewPersisting {
     func saveDrafts(_ drafts: [DraftComment], for endpoint: PREndpoint, headSHA: String) async throws {}
     func loadViewed(for endpoint: PREndpoint, headSHA: String) async throws -> Set<String> { [] }
     func saveViewed(_ viewed: Set<String>, for endpoint: PREndpoint, headSHA: String) async throws {}
+    func loadHiddenReviewers(for endpoint: PREndpoint) async throws -> Set<String> { [] }
+    func saveHiddenReviewers(_ hidden: Set<String>, for endpoint: PREndpoint) async throws {}
 }
 
 private func makePRInfo() -> PRInfo {

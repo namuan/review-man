@@ -25,6 +25,11 @@ final class ReviewPersistenceTests: XCTestCase {
             "viewed-octocat_demo-repo_42_abc123.json"
         )
         XCTAssertEqual(
+            persistence.hiddenReviewersFileName(ep),
+            "hidden-reviewers-octocat_demo-repo_42.json",
+            "hidden reviewers are keyed per PR, with no SHA"
+        )
+        XCTAssertEqual(
             persistence.key(PREndpoint(owner: "o", repo: "r/n", number: 1), sha: "s"),
             "o_r_n_1_s"
         )
@@ -136,6 +141,31 @@ final class ReviewPersistenceTests: XCTestCase {
 
         let loaded = try await persistence.loadViewed(for: ep, headSHA: "v")
         XCTAssertEqual(loaded, ["a.swift", "b.swift"])
+    }
+
+    /// Hidden reviewers round-trip as a JSON string array, keyed per PR: the
+    /// same file serves every head of the pull request (no SHA in the name).
+    func testHiddenReviewersRoundTripIsPRScoped() async throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let persistence = ReviewPersistence(directory: dir)
+
+        try await persistence.saveHiddenReviewers(["bob", "jane"], for: ep)
+        let url = dir.appendingPathComponent(persistence.hiddenReviewersFileName(ep))
+        let raw = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(raw.hasPrefix("["), "hidden reviewers must be a JSON array, got \(raw)")
+
+        let loaded = try await persistence.loadHiddenReviewers(for: ep)
+        XCTAssertEqual(loaded, ["bob", "jane"])
+    }
+
+    /// A missing hidden-reviewers file reads as an empty set.
+    func testHiddenReviewersMissingFileReadsEmpty() async throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let persistence = ReviewPersistence(directory: dir)
+        let loaded = try await persistence.loadHiddenReviewers(for: ep)
+        XCTAssertTrue(loaded.isEmpty)
     }
 
     /// An injected commit failure leaves the previous valid document intact,

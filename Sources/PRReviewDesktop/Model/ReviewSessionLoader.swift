@@ -59,6 +59,8 @@ public struct ReviewSessionLoader {
 
         let drafts = try await persistence.loadDrafts(for: endpoint, headSHA: bundle.pr.headRefOid)
         let viewed = try await persistence.loadViewed(for: endpoint, headSHA: bundle.pr.headRefOid)
+        // PR-scoped: hidden-reviewer state is shared across head changes.
+        let hiddenReviewers = try await persistence.loadHiddenReviewers(for: endpoint)
 
         // Draft revalidation + presentation assembly happen off the main actor;
         // only the completed immutable snapshot is handed back.
@@ -70,7 +72,8 @@ public struct ReviewSessionLoader {
                 files: bundle.files,
                 threads: bundle.threads,
                 drafts: validated,
-                viewed: viewed
+                viewed: viewed,
+                hiddenReviewers: hiddenReviewers
             )
         }.value
         return presentation

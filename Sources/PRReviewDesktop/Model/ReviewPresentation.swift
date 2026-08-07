@@ -118,9 +118,15 @@ public struct ReviewPresentation {
     public let endpoint: PREndpoint?
     public let pr: PRInfo?
     public let files: [DiffFile]
+    /// All fetched threads, including those hidden by the reviewer filter:
+    /// resolve/reply operations and unhide need the full list.
     public let threads: [PRThread]
     public let drafts: [DraftComment]
     public let viewed: Set<String>
+    /// Comment authors whose threads are hidden from the diff and the sidebar
+    /// counts. A thread is hidden when ANY of its comments was written by a
+    /// hidden author. Local-only state, persisted per pull request.
+    public let hiddenReviewers: Set<String>
     /// RowBuilder rows per file path (display order is authoritative).
     public let rowsByFile: [String: [Row]]
     /// Display rows (rows + stable IDs) per file path, precomputed so a large
@@ -141,7 +147,8 @@ public struct ReviewPresentation {
         files: [DiffFile],
         threads: [PRThread],
         drafts: [DraftComment],
-        viewed: Set<String>
+        viewed: Set<String>,
+        hiddenReviewers: Set<String> = []
     ) {
         var fileIndex: [String: Int] = [:]
         fileIndex.reserveCapacity(files.count)
@@ -155,7 +162,10 @@ public struct ReviewPresentation {
 
         // Group threads/drafts by path ONCE; per-file row builds use the
         // grouped slices instead of re-filtering the global arrays per file.
-        let threadsByPath = Dictionary(grouping: threads, by: { $0.path })
+        // Hidden threads are filtered BEFORE grouping, so every row build and
+        // sidebar count sees the same visible set.
+        let visibleThreads = Self.visibleThreads(threads, hiddenReviewers: hiddenReviewers)
+        let threadsByPath = Dictionary(grouping: visibleThreads, by: { $0.path })
         let draftsByPath = Dictionary(grouping: drafts, by: { $0.path })
 
         var rows: [String: [Row]] = [:]
@@ -209,8 +219,8 @@ public struct ReviewPresentation {
 
         self.init(
             endpoint: endpoint, pr: pr, files: files, threads: threads, drafts: drafts,
-            viewed: viewed, rowsByFile: rows, pathlessOrphanIDs: orphans,
-            sidebarItems: sidebarItems, diffRowsByFile: diffRows,
+            viewed: viewed, hiddenReviewers: hiddenReviewers, rowsByFile: rows,
+            pathlessOrphanIDs: orphans, sidebarItems: sidebarItems, diffRowsByFile: diffRows,
             fileIndexByPath: fileIndex, threadByID: threadIndex, draftByID: draftIndex
         )
     }
@@ -225,6 +235,7 @@ public struct ReviewPresentation {
         threads: [PRThread],
         drafts: [DraftComment],
         viewed: Set<String>,
+        hiddenReviewers: Set<String>,
         rowsByFile: [String: [Row]],
         pathlessOrphanIDs: [UUID],
         sidebarItems: [FileSidebarItem],
@@ -239,6 +250,7 @@ public struct ReviewPresentation {
         self.threads = threads
         self.drafts = drafts
         self.viewed = viewed
+        self.hiddenReviewers = hiddenReviewers
         self.rowsByFile = rowsByFile
         self.pathlessOrphanIDs = pathlessOrphanIDs
         self.sidebarItems = sidebarItems
@@ -246,6 +258,16 @@ public struct ReviewPresentation {
         self.fileIndexByPath = fileIndexByPath
         self.threadByID = threadByID
         self.draftByID = draftByID
+    }
+
+    /// Threads to display: a thread is hidden when ANY of its comments was
+    /// written by a hidden reviewer, so hiding follows every author in a
+    /// thread, not just the root commenter.
+    static func visibleThreads(_ threads: [PRThread], hiddenReviewers: Set<String>) -> [PRThread] {
+        guard !hiddenReviewers.isEmpty else { return threads }
+        return threads.filter { thread in
+            thread.comments.allSatisfy { !hiddenReviewers.contains($0.author) }
+        }
     }
 
     public func rows(for path: String) -> [Row] {
@@ -273,8 +295,83 @@ public struct ReviewPresentation {
         }
         return ReviewPresentation(
             endpoint: endpoint, pr: pr, files: files, threads: threads, drafts: drafts,
-            viewed: newViewed, rowsByFile: rowsByFile, pathlessOrphanIDs: pathlessOrphanIDs,
+            viewed: newViewed, hiddenReviewers: hiddenReviewers,
+            rowsByFile: rowsByFile, pathlessOrphanIDs: pathlessOrphanIDs,
             sidebarItems: newSidebar, diffRowsByFile: diffRowsByFile,
+            fileIndexByPath: fileIndexByPath, threadByID: threadByID, draftByID: draftByID
+        )
+    }
+
+    /// A copy with a new hidden-reviewer set. Rows and sidebar counts are
+    /// rebuilt only for files containing threads authored by any changed
+    /// reviewer; everything else (indexes, other files' rows) is reused.
+    public func withHiddenReviewers(_ newHidden: Set<String>) -> ReviewPresentation {
+        let changed = hiddenReviewers.symmetricDifference(newHidden)
+        guard !changed.isEmpty else { return self }
+
+        let visible = Self.visibleThreads(threads, hiddenReviewers: newHidden)
+        let visibleByPath = Dictionary(grouping: visible, by: { $0.path })
+        let draftsByPath = Dictionary(grouping: drafts, by: { $0.path })
+
+        // Only files with a thread by a changed author can change. Scanned
+        // from the FULL thread list: a newly hidden thread is absent from
+        // `visible`, so the visible grouping alone would miss its file.
+        let threadsByPath = Dictionary(grouping: threads, by: { $0.path })
+        var affected = Set<String>()
+        for (path, fileThreads) in threadsByPath {
+            if fileThreads.contains(where: { $0.comments.contains { changed.contains($0.author) } }) {
+                affected.insert(path)
+            }
+        }
+        let knownPaths = Set(files.map { $0.path })
+        let pathless = drafts.filter { $0.isOrphaned && !knownPaths.contains($0.path) }
+        let lastPath = files.last?.path
+
+        var newRows = rowsByFile
+        var newDiffRows = diffRowsByFile
+        var newSidebar = sidebarItems
+        var sidebarIndexByPath: [String: Int] = [:]
+        sidebarIndexByPath.reserveCapacity(newSidebar.count)
+        for (i, item) in newSidebar.enumerated() { sidebarIndexByPath[item.path] = i }
+
+        for path in affected {
+            guard let fileIndex = fileIndexByPath[path] else { continue }
+            let file = files[fileIndex]
+            var fileRows = RowBuilder.build(
+                file: file,
+                fileThreads: visibleByPath[path] ?? [],
+                fileDrafts: draftsByPath[path] ?? [],
+                outdatedExpanded: true
+            )
+            // Re-attach pathless orphans when the rebuilt file is the last
+            // one (they surface on the last file, same as the full build).
+            if path == lastPath, !pathless.isEmpty {
+                if !fileRows.contains(.orphanedHeader) {
+                    fileRows.append(.orphanedHeader)
+                }
+                fileRows.append(contentsOf: pathless.map { .draft(draftID: $0.id) })
+            }
+            newRows[path] = fileRows
+            newDiffRows[path] = Self.displayRows(fileRows, for: file)
+
+            if let sidebarIndex = sidebarIndexByPath[path] {
+                let item = newSidebar[sidebarIndex]
+                let threadCount = (visibleByPath[path] ?? []).filter { !$0.isOutdated }.count
+                    + (draftsByPath[path] ?? []).count
+                newSidebar[sidebarIndex] = FileSidebarItem(
+                    path: item.path, oldPath: item.oldPath, statusLetter: item.statusLetter,
+                    additions: item.additions, deletions: item.deletions,
+                    isBinary: item.isBinary, tooLarge: item.tooLarge,
+                    threadCount: threadCount, isViewed: item.isViewed
+                )
+            }
+        }
+
+        return ReviewPresentation(
+            endpoint: endpoint, pr: pr, files: files, threads: threads, drafts: drafts,
+            viewed: viewed, hiddenReviewers: newHidden,
+            rowsByFile: newRows, pathlessOrphanIDs: pathlessOrphanIDs,
+            sidebarItems: newSidebar, diffRowsByFile: newDiffRows,
             fileIndexByPath: fileIndexByPath, threadByID: threadByID, draftByID: draftByID
         )
     }
@@ -295,7 +392,8 @@ public struct ReviewPresentation {
             affected.insert(last)
         }
 
-        let threadsByPath = Dictionary(grouping: threads, by: { $0.path })
+        let visibleThreads = Self.visibleThreads(threads, hiddenReviewers: hiddenReviewers)
+        let threadsByPath = Dictionary(grouping: visibleThreads, by: { $0.path })
         let draftsByPath = Dictionary(grouping: newDrafts, by: { $0.path })
 
         var newRows = rowsByFile
@@ -345,7 +443,7 @@ public struct ReviewPresentation {
 
         return ReviewPresentation(
             endpoint: endpoint, pr: pr, files: files, threads: threads, drafts: newDrafts,
-            viewed: viewed, rowsByFile: newRows,
+            viewed: viewed, hiddenReviewers: hiddenReviewers, rowsByFile: newRows,
             pathlessOrphanIDs: pathless.map(\.id), sidebarItems: newSidebar,
             diffRowsByFile: newDiffRows, fileIndexByPath: fileIndexByPath,
             threadByID: threadByID, draftByID: newDraftIndex
@@ -367,7 +465,8 @@ public struct ReviewPresentation {
         if threads[index].comments != updated.comments,
            let fileIndex = fileIndexByPath[updated.path] {
             let file = files[fileIndex]
-            let fileThreads = newThreads.filter { $0.path == updated.path }
+            let visible = Self.visibleThreads(newThreads, hiddenReviewers: hiddenReviewers)
+            let fileThreads = visible.filter { $0.path == updated.path }
             let draftsByPath = Dictionary(grouping: drafts, by: { $0.path })
             var fileRows = RowBuilder.build(
                 file: file,
@@ -393,9 +492,10 @@ public struct ReviewPresentation {
 
         return ReviewPresentation(
             endpoint: endpoint, pr: pr, files: files, threads: newThreads, drafts: drafts,
-            viewed: viewed, rowsByFile: newRows, pathlessOrphanIDs: pathlessOrphanIDs,
-            sidebarItems: sidebarItems, diffRowsByFile: newDiffRows,
-            fileIndexByPath: fileIndexByPath, threadByID: newThreadIndex, draftByID: draftByID
+            viewed: viewed, hiddenReviewers: hiddenReviewers, rowsByFile: newRows,
+            pathlessOrphanIDs: pathlessOrphanIDs, sidebarItems: sidebarItems,
+            diffRowsByFile: newDiffRows, fileIndexByPath: fileIndexByPath,
+            threadByID: newThreadIndex, draftByID: draftByID
         )
     }
 

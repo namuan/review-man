@@ -331,6 +331,7 @@ private final class InMemoryPersistence: ReviewPersisting {
     private var drafts: [String: [DraftComment]] = [:]
     private var present = Set<String>()
     private var viewed: [String: Set<String>] = [:]
+    private var hidden: [String: Set<String>] = [:]
 
     func loadDraftState(for endpoint: PREndpoint, headSHA: String) async throws -> PersistedDraftState {
         let k = "\(endpoint.owner)/\(endpoint.repo)#\(endpoint.number)@\(headSHA)"
@@ -352,5 +353,17 @@ private final class InMemoryPersistence: ReviewPersisting {
     func saveViewed(_ viewed: Set<String>, for endpoint: PREndpoint, headSHA: String) async throws {
         let k = "\(endpoint.owner)/\(endpoint.repo)#\(endpoint.number)@\(headSHA)"
         self.viewed[k] = viewed
+    }
+
+    func loadHiddenReviewers(for endpoint: PREndpoint) async throws -> Set<String> {
+        hidden[prKey(endpoint)] ?? []
+    }
+
+    func saveHiddenReviewers(_ hiddenReviewers: Set<String>, for endpoint: PREndpoint) async throws {
+        hidden[prKey(endpoint)] = hiddenReviewers
+    }
+
+    private func prKey(_ endpoint: PREndpoint) -> String {
+        "\(endpoint.owner)/\(endpoint.repo)#\(endpoint.number)"
     }
 }

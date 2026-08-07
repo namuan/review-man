@@ -33,11 +33,16 @@ private final class RecordingService: GitHubServing {
 private final class MemoryPersistence: ReviewPersisting {
     private var stateByKey: [String: PersistedDraftState] = [:]
     private var viewedByKey: [String: Set<String>] = [:]
+    private var hiddenByPR: [String: Set<String>] = [:]
     var failOnSave = false
     private(set) var savedDraftCounts: [Int] = []
 
     private func key(_ ep: PREndpoint, _ sha: String) -> String {
         "\(ep.owner)/\(ep.repo)#\(ep.number)@\(sha)"
+    }
+
+    private func prKey(_ ep: PREndpoint) -> String {
+        "\(ep.owner)/\(ep.repo)#\(ep.number)"
     }
 
     func loadDraftState(for endpoint: PREndpoint, headSHA: String) async throws -> PersistedDraftState {
@@ -55,9 +60,20 @@ private final class MemoryPersistence: ReviewPersisting {
         if failOnSave { throw PersistenceError.saveFailed("injected") }
         viewedByKey[key(endpoint, headSHA)] = viewed
     }
+    func loadHiddenReviewers(for endpoint: PREndpoint) async throws -> Set<String> {
+        hiddenByPR[prKey(endpoint)] ?? []
+    }
+    func saveHiddenReviewers(_ hidden: Set<String>, for endpoint: PREndpoint) async throws {
+        if failOnSave { throw PersistenceError.saveFailed("injected") }
+        hiddenByPR[prKey(endpoint)] = hidden
+    }
 
     func setDraftState(_ state: PersistedDraftState, endpoint: PREndpoint, sha: String) {
         stateByKey[key(endpoint, sha)] = state
+    }
+
+    func setHiddenReviewers(_ hidden: Set<String>, endpoint: PREndpoint) {
+        hiddenByPR[prKey(endpoint)] = hidden
     }
 }
 
@@ -116,6 +132,40 @@ final class ReviewOperationsTests: XCTestCase {
         )
         XCTAssertEqual(result.localState.drafts, [draft])
         XCTAssertEqual(result.localState.viewed, ["x"])
+    }
+
+    // MARK: - Hidden reviewers (PR-scoped)
+
+    func testFirstLoadRestoresHiddenReviewers() async throws {
+        let service = RecordingService()
+        service.bundle = FetchBundle(pr: makePRInfo(sha: "new"), files: [], threads: [])
+        let persistence = MemoryPersistence()
+        persistence.setHiddenReviewers(["jane"], endpoint: ep)
+        let ops = ReviewOperations(service: service, persistence: persistence)
+
+        let result = try await ops.refresh(
+            endpoint: ep,
+            current: ReviewLocalState(headSHA: "", drafts: [], viewed: [])
+        )
+        XCTAssertEqual(result.localState.hiddenReviewers, ["jane"])
+    }
+
+    func testHeadChangeKeepsHiddenReviewers() async throws {
+        let service = RecordingService()
+        service.bundle = FetchBundle(pr: makePRInfo(sha: "new"), files: [], threads: [])
+        let persistence = MemoryPersistence()
+        let ops = ReviewOperations(service: service, persistence: persistence)
+
+        let result = try await ops.refresh(
+            endpoint: ep,
+            current: ReviewLocalState(
+                headSHA: "old", drafts: [], viewed: [], hiddenReviewers: ["jane"]
+            )
+        )
+        XCTAssertEqual(
+            result.localState.hiddenReviewers, ["jane"],
+            "PR-scoped hidden reviewers survive a head change (unlike viewed marks)"
+        )
     }
 
     func testMigrationSaveFailureThrowsWithoutPartialResult() async {

@@ -250,9 +250,24 @@ public struct ThreadCardView: View {
                     store.toggleResolved(threadID: thread.id)
                 }
             }
+            if !thread.comments.isEmpty {
+                Divider()
+                ForEach(distinctAuthors, id: \.self) { author in
+                    Button("Hide comments by \(author)") {
+                        store.hideReviewer(author)
+                    }
+                }
+            }
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("thread-card-\(thread.id)")
+    }
+
+    /// Every distinct author in the thread, alphabetized: hiding follows any
+    /// participant, so each gets a hide action in the context menu.
+    private var distinctAuthors: [String] {
+        Array(Set(thread.comments.map(\.author)))
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
 
     private var accentColor: SwiftUI.Color {

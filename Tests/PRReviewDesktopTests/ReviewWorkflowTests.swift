@@ -44,6 +44,7 @@ private final class WorkflowPersistence: ReviewPersisting {
     private var drafts: [String: [DraftComment]] = [:]
     private var present = Set<String>()
     private var viewed: [String: Set<String>] = [:]
+    private var hiddenByPR: [String: Set<String>] = [:]
     private(set) var draftSaveCount = 0
 
     private func key(_ ep: PREndpoint, _ sha: String) -> String {
@@ -69,6 +70,22 @@ private final class WorkflowPersistence: ReviewPersisting {
         viewed[key(ep, sha)]
     }
     private(set) var viewedSaveCount = 0
+
+    func loadHiddenReviewers(for endpoint: PREndpoint) async throws -> Set<String> {
+        hiddenByPR[prKey(endpoint)] ?? []
+    }
+    func saveHiddenReviewers(_ hidden: Set<String>, for endpoint: PREndpoint) async throws {
+        hiddenSaveCount += 1
+        hiddenByPR[prKey(endpoint)] = hidden
+    }
+    func savedHiddenReviewers(for ep: PREndpoint) -> Set<String>? {
+        hiddenByPR[prKey(ep)]
+    }
+    private(set) var hiddenSaveCount = 0
+
+    private func prKey(_ ep: PREndpoint) -> String {
+        "\(ep.owner)/\(ep.repo)#\(ep.number)"
+    }
 }
 
 private func makePRInfo(sha: String = "sha1") -> PRInfo {
@@ -117,6 +134,18 @@ final class ReviewWorkflowTests: XCTestCase {
             id: id, path: "Src.swift", line: 2, originalLine: 2, side: "RIGHT",
             startLine: nil, startSide: nil, isOutdated: false, isResolved: false,
             comments: [PRComment(databaseId: commentID, author: "a", body: "hi", createdAt: Date())]
+        )
+    }
+
+    /// A thread with one comment per listed author (exercises the "hide by
+    /// any comment author" rule, replies included).
+    private func threadWithAuthors(_ id: String, _ authors: [String]) -> PRThread {
+        PRThread(
+            id: id, path: "Src.swift", line: 2, originalLine: 2, side: "RIGHT",
+            startLine: nil, startSide: nil, isOutdated: false, isResolved: false,
+            comments: authors.enumerated().map { i, author in
+                PRComment(databaseId: 100 + i, author: author, body: "hi from \(author)", createdAt: Date())
+            }
         )
     }
 
@@ -374,6 +403,83 @@ final class ReviewWorkflowTests: XCTestCase {
         waitSync { (persistence.savedViewed(for: ep, sha: "sha1") ?? []).contains("Src.swift") }
         XCTAssertEqual(persistence.viewedSaveCount, 1, "all rapid toggles coalesce into a single write")
         XCTAssertTrue(store.review?.viewed.contains("Other.swift4") ?? false)
+    }
+
+    // MARK: - Hidden reviewers
+
+    func testHideReviewerHidesThreadsByAnyAuthorAndPersists() {
+        let (_, persistence, store) = makeRealStore()
+        mutate(store) { session in
+            session.threads = [
+                threadWithAuthors("t1", ["jane", "bob"]),   // jane is a REPLY author
+                threadWithAuthors("t2", ["bob"]),
+                threadWithAuthors("t3", ["carol"]),
+            ]
+        }
+        XCTAssertEqual(store.review?.sidebarItems.first?.threadCount, 3)
+
+        store.hideReviewer("jane")
+
+        XCTAssertEqual(store.hiddenReviewers, ["jane"])
+        XCTAssertFalse(store.review?.rows(for: "Src.swift").contains(.thread(threadID: "t1")) ?? true)
+        XCTAssertTrue(store.review?.rows(for: "Src.swift").contains(.thread(threadID: "t2")) ?? false)
+        XCTAssertTrue(store.review?.rows(for: "Src.swift").contains(.thread(threadID: "t3")) ?? false)
+        XCTAssertEqual(store.review?.sidebarItems.first?.threadCount, 2)
+        waitSync { (persistence.savedHiddenReviewers(for: ep) ?? []).contains("jane") }
+    }
+
+    func testUnhideAllReviewersRestoresThreads() {
+        let (_, _, store) = makeRealStore()
+        mutate(store) { session in
+            session.threads = [threadWithAuthors("t1", ["jane"]), threadWithAuthors("t2", ["bob"])]
+        }
+        store.hideReviewer("jane")
+        store.hideReviewer("bob")
+        let hiddenRows = store.review?.rows(for: "Src.swift") ?? []
+        XCTAssertFalse(hiddenRows.contains(.thread(threadID: "t1")))
+        XCTAssertFalse(hiddenRows.contains(.thread(threadID: "t2")), "all thread cards hidden")
+
+        store.unhideAllReviewers()
+
+        XCTAssertTrue(store.hiddenReviewers.isEmpty)
+        XCTAssertTrue(store.review?.rows(for: "Src.swift").contains(.thread(threadID: "t1")) ?? false)
+        XCTAssertTrue(store.review?.rows(for: "Src.swift").contains(.thread(threadID: "t2")) ?? false)
+    }
+
+    func testHideReviewerClearsSelectionAndReplyEditors() {
+        let (_, _, store) = makeRealStore()
+        mutate(store) { session in
+            session.threads = [threadWithAuthors("t1", ["jane"])]
+        }
+        store.selection.rowID = .thread(id: "t1")
+        store.beginReply(threadID: "t1")
+        XCTAssertFalse(store.replyEditors.isEmpty)
+
+        store.hideReviewer("jane")
+
+        XCTAssertNil(store.selection.rowID, "selection pointing at a hidden thread is cleared")
+        XCTAssertTrue(store.replyEditors.isEmpty, "reply editor on a hidden thread is dismissed")
+    }
+
+    /// Refreshing (same head) keeps the in-memory hidden set: migration
+    /// carries the PR-scoped state through unchanged.
+    func testHiddenReviewersSurviveRefresh() {
+        let (service, _, store) = makeRealStore()
+        mutate(store) { session in
+            session.threads = [threadWithAuthors("t1", ["jane"])]
+        }
+        store.hideReviewer("jane")
+
+        service.bundle = FetchBundle(
+            pr: makePRInfo(),
+            files: DiffParser.parse(sampleDiff),
+            threads: [threadWithAuthors("t1", ["jane"])]
+        )
+        store.refresh()
+        waitSync { store.banner != nil }
+
+        XCTAssertEqual(store.hiddenReviewers, ["jane"], "refresh keeps PR-scoped hidden reviewers")
+        XCTAssertFalse(store.review?.rows(for: "Src.swift").contains(.thread(threadID: "t1")) ?? true)
     }
 
     // MARK: - Submit

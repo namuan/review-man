@@ -18,13 +18,18 @@ public struct ReviewCommandContext {
     public let isSubmitting: Bool
     public let canSubmit: Bool
     public let hasPRURL: Bool
+    /// Any distinct comment author exists (hide menu is offerable).
+    public let hasReviewers: Bool
+    /// At least one reviewer is currently hidden (show-all is offerable).
+    public let hasHiddenReviewers: Bool
 
     public init(
         state: PresentationState, isDemo: Bool, hasSelectedFile: Bool,
         hasCommentableSelection: Bool, selectedThreadIsActive: Bool,
         selectedThreadHasRootComment: Bool, canUndo: Bool, canRedo: Bool,
         draftEditorOpen: Bool, submitHidden: Bool, isSubmitting: Bool,
-        canSubmit: Bool, hasPRURL: Bool
+        canSubmit: Bool, hasPRURL: Bool,
+        hasReviewers: Bool = false, hasHiddenReviewers: Bool = false
     ) {
         self.state = state
         self.isDemo = isDemo
@@ -39,6 +44,8 @@ public struct ReviewCommandContext {
         self.isSubmitting = isSubmitting
         self.canSubmit = canSubmit
         self.hasPRURL = hasPRURL
+        self.hasReviewers = hasReviewers
+        self.hasHiddenReviewers = hasHiddenReviewers
     }
 }
 
@@ -59,6 +66,8 @@ public struct ReviewCommandAvailability {
     public let canOpenInBrowser: Bool
     public let canCopyLine: Bool
     public let canToggleSidebar: Bool
+    public let canHideReviewer: Bool
+    public let canShowHiddenComments: Bool
 
     public init(context: ReviewCommandContext) {
         let loaded = context.state == .loaded
@@ -78,5 +87,7 @@ public struct ReviewCommandAvailability {
         canOpenInBrowser = loaded && context.hasPRURL
         canCopyLine = loaded && context.hasCommentableSelection
         canToggleSidebar = loaded
+        canHideReviewer = loaded && context.hasReviewers
+        canShowHiddenComments = loaded && context.hasHiddenReviewers
     }
 }

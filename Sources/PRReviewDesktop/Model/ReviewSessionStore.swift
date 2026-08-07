@@ -91,6 +91,7 @@ public final class ReviewSessionStore: ObservableObject {
     /// the final snapshot reaches disk.
     var pendingDraftSave: Task<Void, Never>?
     var pendingViewedSave: Task<Void, Never>?
+    var pendingHiddenReviewersSave: Task<Void, Never>?
 
     public init(
         service: GitHubServing,
@@ -114,6 +115,7 @@ public final class ReviewSessionStore: ObservableObject {
         submitTask?.cancel()
         pendingDraftSave?.cancel()
         pendingViewedSave?.cancel()
+        pendingHiddenReviewersSave?.cancel()
     }
 
     // MARK: - Loading
