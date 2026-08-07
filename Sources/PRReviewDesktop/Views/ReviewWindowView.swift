@@ -7,6 +7,7 @@ import PRReviewKit
 public struct ReviewWindowView: View {
     @ObservedObject public var store: ReviewSessionStore
     @State private var showOpenSheet = false
+    @State private var sheetReference = ""
     @State private var sidebarVisible = true
     @State private var showCloseWarning = false
 
@@ -56,13 +57,14 @@ public struct ReviewWindowView: View {
                 Text("Open Pull Request")
                     .font(.headline)
                     .accessibilityAddTraits(.isHeader)
-                OpenPullRequestForm(store: store, reference: .constant(""))
+                OpenPullRequestForm(store: store, reference: $sheetReference)
                     .frame(maxWidth: 420)
                 Button("Close") { showOpenSheet = false }
                     .keyboardShortcut(.cancelAction)
             }
             .padding(24)
             .frame(width: 480)
+            .onAppear { sheetReference = "" }
         }
         .sheet(isPresented: submitSheetBinding) {
             SubmitReviewView(store: store)
