@@ -19,6 +19,7 @@ public struct ChangeCanvasView: View {
     @Binding public var zoom: CGFloat
 
     @State private var pinchStartZoom: CGFloat?
+    @State private var canvasContentSize = CGSize.zero
 
     public static func clampedZoom(_ value: CGFloat) -> CGFloat {
         min(maximumZoom, max(minimumZoom, value))
@@ -52,7 +53,16 @@ public struct ChangeCanvasView: View {
                 canvasToolbar
                 Divider()
                 GeometryReader { geometry in
-                    canvasScroll(viewportWidth: geometry.size.width)
+                    ZStack(alignment: .topLeading) {
+                        canvasScroll(
+                            viewportWidth: geometry.size.width,
+                            viewportHeight: geometry.size.height
+                        )
+                    }
+                    // Attach magnification to a parent of the ScrollView. This
+                    // lets pinch gestures pass through cards while native
+                    // two-axis scrolling stays untouched.
+                    .simultaneousGesture(magnificationGesture)
                 }
             }
             .accessibilityIdentifier("change-canvas-pane")
@@ -116,7 +126,7 @@ public struct ChangeCanvasView: View {
         .accessibilityIdentifier("change-canvas-toolbar")
     }
 
-    private func canvasScroll(viewportWidth: CGFloat) -> some View {
+    private func canvasScroll(viewportWidth: CGFloat, viewportHeight: CGFloat) -> some View {
         let minimumBoardWidth = cardMinimumWidth * 2 + cardGap
         let maximumBoardWidth = cardMaximumWidth * 4 + cardGap * 3
         let boardWidth = min(
@@ -130,32 +140,64 @@ public struct ChangeCanvasView: View {
         let columnWidth = (boardWidth - CGFloat(columnCount - 1) * cardGap)
             / CGFloat(columnCount)
 
-        return ScrollView([.horizontal, .vertical]) {
-            HStack(alignment: .top, spacing: cardGap) {
-                ForEach(0..<columnCount, id: \.self) { column in
-                    LazyVStack(alignment: .leading, spacing: cardGap) {
-                        ForEach(
-                            Array(files.enumerated()).filter { $0.offset % columnCount == column },
-                            id: \.element.path
-                        ) { _, file in
-                            fileCard(file, width: columnWidth)
+        return ScrollView([.horizontal, .vertical], showsIndicators: true) {
+            ZStack(alignment: .topLeading) {
+                HStack(alignment: .top, spacing: cardGap) {
+                    ForEach(0..<columnCount, id: \.self) { column in
+                        VStack(alignment: .leading, spacing: cardGap) {
+                            ForEach(
+                                Array(files.enumerated()).filter { $0.offset % columnCount == column },
+                                id: \.element.path
+                            ) { _, file in
+                                fileCard(file, width: columnWidth)
+                            }
                         }
+                        .frame(width: columnWidth, alignment: .topLeading)
                     }
-                    .frame(width: columnWidth, alignment: .topLeading)
                 }
-            }
-            .frame(width: boardWidth, alignment: .leading)
-            .padding(24)
-            .background {
-                Canvas { context, size in
-                    drawGrid(in: &context, size: size)
+                .frame(width: boardWidth, alignment: .leading)
+                // Force the masonry columns to report their intrinsic height
+                // instead of accepting the vertical ScrollView proposal.
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(24)
+                .background {
+                    Canvas { context, size in
+                        drawGrid(in: &context, size: size)
+                    }
+                    .allowsHitTesting(false)
                 }
-                .allowsHitTesting(false)
+                // scaleEffect changes pixels, not layout. Measure the unscaled
+                // board and give the scroll view a matching scaled content frame;
+                // otherwise the cards look larger but the scroll view still thinks
+                // the board has its original size.
+                .background {
+                    GeometryReader { proxy in
+                        Color.clear.preference(
+                            key: CanvasContentSizeKey.self,
+                            value: proxy.size
+                        )
+                    }
+                }
+                .scaleEffect(zoom, anchor: .topLeading)
             }
-            .scaleEffect(zoom, anchor: .topLeading)
+            // Align the transformed board to the top-left explicitly. Without
+            // a wrapper, SwiftUI can center a transformed child in the scroll
+            // content area and leave a large blank band above the first card.
+            .frame(
+                width: max(canvasContentSize.width, boardWidth + 48) * zoom,
+                height: max(
+                    canvasContentSize.height,
+                    viewportHeight / max(zoom, 0.01)
+                ) * zoom,
+                alignment: .topLeading
+            )
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color(nsColor: .windowBackgroundColor))
-        .simultaneousGesture(magnificationGesture)
+        .onPreferenceChange(CanvasContentSizeKey.self) { size in
+            guard size.width > 0, size.height > 0 else { return }
+            canvasContentSize = size
+        }
         .onMoveCommand { direction in
             // The canvas itself navigates files with the arrow keys. Once a
             // card is opened, the focused diff restores line-level movement.
@@ -244,6 +286,14 @@ public struct ChangeCanvasView: View {
     private func canvasAccessibilityLabel(for file: DiffFile) -> String {
         let viewed = fileIsViewed(file) ? ", viewed" : ""
         return "\(file.path), complete patch, \(file.additions) additions, \(file.deletions) deletions\(viewed)"
+    }
+}
+
+private struct CanvasContentSizeKey: PreferenceKey {
+    static let defaultValue = CGSize.zero
+
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
+        value = nextValue()
     }
 }
 

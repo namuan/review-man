@@ -27,6 +27,13 @@ DEST_APP="$DEST_DIR/$APP_NAME"
 echo "Building PR Review (Release)…"
 bash "$ROOT/scripts/build-app" release
 
+# A running copy keeps its old executable in memory. Quit it before replacing
+# the bundle, then use `open -n` below so macOS cannot simply focus that stale
+# process instead of launching the newly installed build.
+if osascript -e 'if application "PR Review" is running then tell application "PR Review" to quit' >/dev/null 2>&1; then
+  sleep 0.5
+fi
+
 readonly built_app="$ROOT/build/$APP_NAME"
 if [ ! -d "$built_app" ]; then
   echo "Error: Build succeeded but app bundle not found at: $built_app"
@@ -40,5 +47,5 @@ mv "$built_app" "$DEST_APP"
 
 echo ""
 echo "Installed: $DEST_APP"
-echo "Launch:    open \"$DEST_APP\""
-open "$DEST_APP"
+echo "Launch:    open -n \"$DEST_APP\""
+open -n "$DEST_APP"
