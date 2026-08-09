@@ -12,6 +12,7 @@ public struct ReviewWindowView: View {
     /// The change canvas is the default overview mode. Selecting a file card
     /// or a file in the sidebar switches back to the focused-file view.
     @State private var showCanvas = true
+    @State private var canvasZoom = ChangeCanvasView.defaultZoom
     @State private var showCloseWarning = false
 
     public init(store: ReviewSessionStore) {
@@ -46,7 +47,10 @@ public struct ReviewWindowView: View {
             Text("The last persistence operation failed; your in-memory changes may not survive this window closing.")
         }
         .modifier(CommandRoutingModifier(
-            store: store, showOpenSheet: $showOpenSheet, sidebarVisible: $sidebarVisible
+            store: store,
+            showOpenSheet: $showOpenSheet,
+            sidebarVisible: $sidebarVisible,
+            canvasZoom: $canvasZoom
         ))
         .toolbar { toolbarContent }
         .onChange(of: store.requestFocus) { _ in
@@ -281,7 +285,12 @@ public struct ReviewWindowView: View {
                         message: "This pull request has no file changes."
                     )
                 } else if showCanvas {
-                    ChangeCanvasView(store: store, files: review.files, showCanvas: $showCanvas)
+                    ChangeCanvasView(
+                        store: store,
+                        files: review.files,
+                        showCanvas: $showCanvas,
+                        zoom: $canvasZoom
+                    )
                 } else if let file = store.selectedFile {
                     DiffView(store: store, file: file)
                 } else {
@@ -349,6 +358,7 @@ private struct CommandRoutingModifier: ViewModifier {
     @ObservedObject var store: ReviewSessionStore
     @Binding var showOpenSheet: Bool
     @Binding var sidebarVisible: Bool
+    @Binding var canvasZoom: CGFloat
 
     func body(content: Content) -> some View {
         content
@@ -403,6 +413,18 @@ private struct CommandRoutingModifier: ViewModifier {
             .onReceive(NotificationCenter.default.publisher(for: .reviewToggleSidebarRequest)) { note in
                 guard matches(note) else { return }
                 sidebarVisible.toggle()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .reviewCanvasZoomInRequest)) { note in
+                guard matches(note) else { return }
+                canvasZoom = ChangeCanvasView.clampedZoom(canvasZoom + ChangeCanvasView.zoomStep)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .reviewCanvasZoomOutRequest)) { note in
+                guard matches(note) else { return }
+                canvasZoom = ChangeCanvasView.clampedZoom(canvasZoom - ChangeCanvasView.zoomStep)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .reviewCanvasResetZoomRequest)) { note in
+                guard matches(note) else { return }
+                canvasZoom = ChangeCanvasView.defaultZoom
             }
             .onReceive(NotificationCenter.default.publisher(for: .reviewPreviousFileRequest)) { note in
                 guard matches(note) else { return }

@@ -8,11 +8,21 @@ import PRReviewKit
 /// of the board reflects the shape of the PR. Selecting a card opens the
 /// existing focused diff view for comments and line-level review.
 public struct ChangeCanvasView: View {
+    public static let defaultZoom: CGFloat = 0.85
+    public static let minimumZoom: CGFloat = 0.55
+    public static let maximumZoom: CGFloat = 1.35
+    public static let zoomStep: CGFloat = 0.1
+
     @ObservedObject public var store: ReviewSessionStore
     public let files: [DiffFile]
     @Binding public var showCanvas: Bool
+    @Binding public var zoom: CGFloat
 
-    @State private var zoom: CGFloat = 0.85
+    @State private var pinchStartZoom: CGFloat?
+
+    public static func clampedZoom(_ value: CGFloat) -> CGFloat {
+        min(maximumZoom, max(minimumZoom, value))
+    }
 
     private let cardMinimumWidth: CGFloat = 340
     private let cardMaximumWidth: CGFloat = 560
@@ -21,11 +31,13 @@ public struct ChangeCanvasView: View {
     public init(
         store: ReviewSessionStore,
         files: [DiffFile],
-        showCanvas: Binding<Bool>
+        showCanvas: Binding<Bool>,
+        zoom: Binding<CGFloat>
     ) {
         self.store = store
         self.files = files
         self._showCanvas = showCanvas
+        self._zoom = zoom
     }
 
     public var body: some View {
@@ -54,7 +66,7 @@ public struct ChangeCanvasView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text("Change canvas")
                     .font(.headline)
-                Text("Every file shows its complete patch")
+                Text("Complete patches · Pinch or ⌘+/⌘− to zoom")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -68,13 +80,13 @@ public struct ChangeCanvasView: View {
                 .frame(height: 18)
 
             Button {
-                zoom = max(0.55, zoom - 0.1)
+                zoomOut()
             } label: {
                 Image(systemName: "minus.magnifyingglass")
             }
             .buttonStyle(.borderless)
-            .help("Zoom out")
-            .accessibilityLabel("Zoom out")
+            .help("Zoom out (⌘−)")
+            .accessibilityLabel("Zoom out (Command minus)")
 
             Text("\(Int(zoom * 100))%")
                 .font(.caption.monospacedDigit())
@@ -82,20 +94,20 @@ public struct ChangeCanvasView: View {
                 .accessibilityLabel("Canvas zoom \(Int(zoom * 100)) percent")
 
             Button {
-                zoom = min(1.35, zoom + 0.1)
+                zoomIn()
             } label: {
                 Image(systemName: "plus.magnifyingglass")
             }
             .buttonStyle(.borderless)
-            .help("Zoom in")
-            .accessibilityLabel("Zoom in")
+            .help("Zoom in (⌘+)")
+            .accessibilityLabel("Zoom in (Command plus)")
 
             Button("Reset") {
-                zoom = 0.85
+                resetZoom()
             }
             .buttonStyle(.borderless)
             .font(.caption)
-            .help("Reset canvas zoom")
+            .help("Reset canvas zoom (⌘0)")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
@@ -143,6 +155,7 @@ public struct ChangeCanvasView: View {
             .scaleEffect(zoom, anchor: .topLeading)
         }
         .background(Color(nsColor: .windowBackgroundColor))
+        .simultaneousGesture(magnificationGesture)
         .onMoveCommand { direction in
             // The canvas itself navigates files with the arrow keys. Once a
             // card is opened, the focused diff restores line-level movement.
@@ -173,6 +186,32 @@ public struct ChangeCanvasView: View {
         }
         .accessibilityIdentifier("canvas-file-\(file.path)")
         .accessibilityLabel(canvasAccessibilityLabel(for: file))
+    }
+
+    private var magnificationGesture: some Gesture {
+        MagnificationGesture()
+            .onChanged { value in
+                if pinchStartZoom == nil {
+                    pinchStartZoom = zoom
+                }
+                let start = pinchStartZoom ?? zoom
+                zoom = Self.clampedZoom(start * value)
+            }
+            .onEnded { _ in
+                pinchStartZoom = nil
+            }
+    }
+
+    private func zoomIn() {
+        zoom = Self.clampedZoom(zoom + Self.zoomStep)
+    }
+
+    private func zoomOut() {
+        zoom = Self.clampedZoom(zoom - Self.zoomStep)
+    }
+
+    private func resetZoom() {
+        zoom = Self.defaultZoom
     }
 
     private func drawGrid(in context: inout GraphicsContext, size: CGSize) {

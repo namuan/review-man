@@ -124,6 +124,35 @@ public struct ReviewCommands: Commands {
             .disabled(!availability.canRefresh)
         }
 
+        CommandMenu("Canvas") {
+            Button("Zoom In") {
+                NotificationCenter.default.post(
+                    name: .reviewCanvasZoomInRequest,
+                    object: focusedStore
+                )
+            }
+            .keyboardShortcut("+", modifiers: .command)
+            .disabled(focusedStore == nil)
+
+            Button("Zoom Out") {
+                NotificationCenter.default.post(
+                    name: .reviewCanvasZoomOutRequest,
+                    object: focusedStore
+                )
+            }
+            .keyboardShortcut("-", modifiers: .command)
+            .disabled(focusedStore == nil)
+
+            Button("Reset Zoom") {
+                NotificationCenter.default.post(
+                    name: .reviewCanvasResetZoomRequest,
+                    object: focusedStore
+                )
+            }
+            .keyboardShortcut("0", modifiers: .command)
+            .disabled(focusedStore == nil)
+        }
+
         CommandMenu("Navigate") {
             Button("Toggle Sidebar") {
                 NotificationCenter.default.post(name: .reviewToggleSidebarRequest, object: focusedStore)
@@ -176,6 +205,9 @@ public extension Notification.Name {
     static let reviewSubmitRequest = Notification.Name("review.submit")
     static let reviewRefreshRequest = Notification.Name("review.refresh")
     static let reviewToggleSidebarRequest = Notification.Name("review.toggleSidebar")
+    static let reviewCanvasZoomInRequest = Notification.Name("review.canvasZoomIn")
+    static let reviewCanvasZoomOutRequest = Notification.Name("review.canvasZoomOut")
+    static let reviewCanvasResetZoomRequest = Notification.Name("review.canvasResetZoom")
     static let reviewPreviousFileRequest = Notification.Name("review.previousFile")
     static let reviewNextFileRequest = Notification.Name("review.nextFile")
     static let reviewPreviousHunkRequest = Notification.Name("review.previousHunk")

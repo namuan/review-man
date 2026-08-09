@@ -21,7 +21,8 @@ separate windows and no duplicates for the same repository + PR.
   scrolling, syntax coloring, and word-level change highlighting.
 - **Change canvas**: see every changed file as a spatial card with a complete,
   readable patch, status, change density, comment counts, and viewed marks;
-  click a card to open the focused diff for line-level comments.
+  click a card to open the focused diff for line-level comments. Pinch on a
+  trackpad or use ⌘+/⌘−/⌘0 to zoom.
 - **Comment inline**: click a line and add a draft (deleted lines become
   LEFT-side comments), or Shift-click for a multi-line range comment. Drafts
   are edited and deleted in place, with Undo/Redo, and persist automatically.
