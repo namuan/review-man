@@ -19,9 +19,9 @@ separate windows and no duplicates for the same repository + PR.
 
 - **Read the diff** with SF Mono, fixed line-number gutters, horizontal
   scrolling, syntax coloring, and word-level change highlighting.
-- **Change canvas**: see every changed file as a spatial card with status,
-  change density, line previews, comment counts, and viewed marks; click a
-  card to open the full focused diff.
+- **Change canvas**: see every changed file as a spatial card with a complete,
+  readable patch, status, change density, comment counts, and viewed marks;
+  click a card to open the focused diff for line-level comments.
 - **Comment inline**: click a line and add a draft (deleted lines become
   LEFT-side comments), or Shift-click for a multi-line range comment. Drafts
   are edited and deleted in place, with Undo/Redo, and persist automatically.

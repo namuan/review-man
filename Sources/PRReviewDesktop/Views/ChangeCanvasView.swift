@@ -3,21 +3,20 @@ import PRReviewKit
 
 /// A spatial overview of every file changed by the pull request.
 ///
-/// This is intentionally not another long diff: each changed file gets an
-/// addressable card on a zoomable canvas. The card shows the file's change
-/// shape and a compact preview; selecting it opens the existing focused diff
-/// view for the full line-by-line review.
+/// This is a canvas of complete file patches, not a second truncated diff.
+/// Cards grow with the number of hunks and lines they contain, so the shape
+/// of the board reflects the shape of the PR. Selecting a card opens the
+/// existing focused diff view for comments and line-level review.
 public struct ChangeCanvasView: View {
     @ObservedObject public var store: ReviewSessionStore
     public let files: [DiffFile]
     @Binding public var showCanvas: Bool
 
-    @State private var zoom: CGFloat = 0.9
+    @State private var zoom: CGFloat = 0.85
 
-    private let cardWidth: CGFloat = 300
-    private let cardHeight: CGFloat = 242
-    private let columnGap: CGFloat = 22
-    private let rowGap: CGFloat = 22
+    private let cardMinimumWidth: CGFloat = 340
+    private let cardMaximumWidth: CGFloat = 560
+    private let cardGap: CGFloat = 22
 
     public init(
         store: ReviewSessionStore,
@@ -41,15 +40,7 @@ public struct ChangeCanvasView: View {
                 canvasToolbar
                 Divider()
                 GeometryReader { geometry in
-                    let layout = CanvasLayout(
-                        fileCount: files.count,
-                        viewportWidth: geometry.size.width,
-                        cardWidth: cardWidth,
-                        cardHeight: cardHeight,
-                        columnGap: columnGap,
-                        rowGap: rowGap
-                    )
-                    canvasScroll(layout: layout)
+                    canvasScroll(viewportWidth: geometry.size.width)
                 }
             }
             .accessibilityIdentifier("change-canvas-pane")
@@ -63,7 +54,7 @@ public struct ChangeCanvasView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text("Change canvas")
                     .font(.headline)
-                Text("Click a file to open its full diff")
+                Text("Every file shows its complete patch")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -77,7 +68,7 @@ public struct ChangeCanvasView: View {
                 .frame(height: 18)
 
             Button {
-                zoom = max(0.6, zoom - 0.1)
+                zoom = max(0.55, zoom - 0.1)
             } label: {
                 Image(systemName: "minus.magnifyingglass")
             }
@@ -100,7 +91,7 @@ public struct ChangeCanvasView: View {
             .accessibilityLabel("Zoom in")
 
             Button("Reset") {
-                zoom = 0.9
+                zoom = 0.85
             }
             .buttonStyle(.borderless)
             .font(.caption)
@@ -113,46 +104,48 @@ public struct ChangeCanvasView: View {
         .accessibilityIdentifier("change-canvas-toolbar")
     }
 
-    private func canvasScroll(layout: CanvasLayout) -> some View {
-        ScrollView([.horizontal, .vertical]) {
-            ZStack(alignment: .topLeading) {
+    private func canvasScroll(viewportWidth: CGFloat) -> some View {
+        let minimumBoardWidth = cardMinimumWidth * 2 + cardGap
+        let maximumBoardWidth = cardMaximumWidth * 4 + cardGap * 3
+        let boardWidth = min(
+            max(viewportWidth - 48, minimumBoardWidth),
+            maximumBoardWidth
+        )
+        let columnCount = max(
+            1,
+            min(4, Int((boardWidth + cardGap) / (cardMinimumWidth + cardGap)))
+        )
+        let columnWidth = (boardWidth - CGFloat(columnCount - 1) * cardGap)
+            / CGFloat(columnCount)
+
+        return ScrollView([.horizontal, .vertical]) {
+            HStack(alignment: .top, spacing: cardGap) {
+                ForEach(0..<columnCount, id: \.self) { column in
+                    LazyVStack(alignment: .leading, spacing: cardGap) {
+                        ForEach(
+                            Array(files.enumerated()).filter { $0.offset % columnCount == column },
+                            id: \.element.path
+                        ) { _, file in
+                            fileCard(file, width: columnWidth)
+                        }
+                    }
+                    .frame(width: columnWidth, alignment: .topLeading)
+                }
+            }
+            .frame(width: boardWidth, alignment: .leading)
+            .padding(24)
+            .background {
                 Canvas { context, size in
                     drawGrid(in: &context, size: size)
                 }
                 .allowsHitTesting(false)
-
-                ForEach(Array(files.enumerated()), id: \.element.path) { index, file in
-                    Button {
-                        open(file)
-                    } label: {
-                        ChangeCanvasCard(store: store, file: file)
-                    }
-                    .buttonStyle(.plain)
-                    .frame(width: cardWidth, height: cardHeight)
-                    .offset(x: layout.x(for: index), y: layout.y(for: index))
-                    .contextMenu {
-                        Button("Open full diff") { open(file) }
-                        Button(fileIsViewed(file) ? "Mark unviewed" : "Mark viewed") {
-                            store.toggleViewed(filePath: file.path)
-                        }
-                    }
-                    .accessibilityIdentifier("canvas-file-\(file.path)")
-                    .accessibilityLabel(canvasAccessibilityLabel(for: file))
-                }
             }
-            .frame(width: layout.width, height: layout.height, alignment: .topLeading)
             .scaleEffect(zoom, anchor: .topLeading)
-            .frame(
-                width: layout.width * zoom,
-                height: layout.height * zoom,
-                alignment: .topLeading
-            )
-            .padding(18)
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .onMoveCommand { direction in
-            // Keep arrow-key line navigation available after the reviewer
-            // returns to the focused diff view from a card.
+            // The canvas itself navigates files with the arrow keys. Once a
+            // card is opened, the focused diff restores line-level movement.
             switch direction {
             case .up:
                 store.selectPreviousFile()
@@ -162,6 +155,24 @@ public struct ChangeCanvasView: View {
                 break
             }
         }
+    }
+
+    private func fileCard(_ file: DiffFile, width: CGFloat) -> some View {
+        Button {
+            open(file)
+        } label: {
+            ChangeCanvasCard(store: store, file: file)
+        }
+        .buttonStyle(.plain)
+        .frame(width: width, alignment: .topLeading)
+        .contextMenu {
+            Button("Open focused diff") { open(file) }
+            Button(fileIsViewed(file) ? "Mark unviewed" : "Mark viewed") {
+                store.toggleViewed(filePath: file.path)
+            }
+        }
+        .accessibilityIdentifier("canvas-file-\(file.path)")
+        .accessibilityLabel(canvasAccessibilityLabel(for: file))
     }
 
     private func drawGrid(in context: inout GraphicsContext, size: CGSize) {
@@ -193,50 +204,12 @@ public struct ChangeCanvasView: View {
 
     private func canvasAccessibilityLabel(for file: DiffFile) -> String {
         let viewed = fileIsViewed(file) ? ", viewed" : ""
-        return "\(file.path), \(file.additions) additions, \(file.deletions) deletions\(viewed)"
+        return "\(file.path), complete patch, \(file.additions) additions, \(file.deletions) deletions\(viewed)"
     }
 }
 
-private struct CanvasLayout {
-    let columns: Int
-    let width: CGFloat
-    let height: CGFloat
-    let cardWidth: CGFloat
-    let cardHeight: CGFloat
-    let columnGap: CGFloat
-    let rowGap: CGFloat
-
-    init(
-        fileCount: Int,
-        viewportWidth: CGFloat,
-        cardWidth: CGFloat,
-        cardHeight: CGFloat,
-        columnGap: CGFloat,
-        rowGap: CGFloat
-    ) {
-        self.cardWidth = cardWidth
-        self.cardHeight = cardHeight
-        self.columnGap = columnGap
-        self.rowGap = rowGap
-        let available = max(viewportWidth - 36, cardWidth)
-        self.columns = max(1, min(4, Int((available + columnGap) / (cardWidth + columnGap))))
-        let rows = max(1, Int(ceil(Double(max(fileCount, 1)) / Double(columns))))
-        self.width = CGFloat(columns) * cardWidth + CGFloat(columns - 1) * columnGap
-        self.height = CGFloat(rows) * cardHeight + CGFloat(rows - 1) * rowGap
-    }
-
-    func x(for index: Int) -> CGFloat {
-        CGFloat(index % columns) * (cardWidth + columnGap)
-    }
-
-    func y(for index: Int) -> CGFloat {
-        CGFloat(index / columns) * (cardHeight + rowGap)
-    }
-}
-
-/// One file's visual summary on the canvas. The mini preview uses real changed
-/// lines, while the density strip encodes every diff line without making the
-/// canvas pay the cost of rendering thousands of full text rows.
+/// A variable-height file card containing every hunk and every diff line.
+/// Long lines wrap rather than disappearing behind a preview truncation.
 private struct ChangeCanvasCard: View {
     @ObservedObject var store: ReviewSessionStore
     let file: DiffFile
@@ -245,20 +218,28 @@ private struct ChangeCanvasCard: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             metadata
-            ChangeDensityStrip(lines: allLines, isBinary: file.isBinary || file.tooLarge)
+            ChangeDensityStrip(lines: allLines, isUnavailable: file.isBinary || file.tooLarge)
                 .frame(height: 10)
                 .padding(.horizontal, 12)
                 .padding(.top, 8)
 
-            preview
-                .padding(.horizontal, 12)
-                .padding(.top, 8)
-
-            Spacer(minLength: 0)
+            if file.isBinary {
+                unavailableState("Binary file", systemImage: "doc.zipper")
+            } else if file.tooLarge {
+                unavailableState("Patch unavailable", systemImage: "exclamationmark.triangle")
+            } else if file.hunks.isEmpty {
+                Text("No textual changes")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(14)
+            } else {
+                fullPatch
+                    .padding(.top, 8)
+            }
 
             HStack(spacing: 5) {
                 Image(systemName: "arrow.up.right")
-                Text("Open full diff")
+                Text("Open focused diff for comments")
                 Spacer()
                 if fileIsViewed {
                     Image(systemName: "checkmark.circle.fill")
@@ -268,9 +249,10 @@ private struct ChangeCanvasCard: View {
             .font(.caption2.weight(.medium))
             .foregroundStyle(.secondary)
             .padding(.horizontal, 12)
+            .padding(.top, 12)
             .padding(.bottom, 10)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
         .overlay {
             RoundedRectangle(cornerRadius: 10)
@@ -312,7 +294,7 @@ private struct ChangeCanvasCard: View {
                 .foregroundStyle(.red)
             Text("·")
                 .foregroundStyle(.tertiary)
-            Text("\(file.hunks.count) \(file.hunks.count == 1 ? "hunk" : "hunks")")
+            Text("\(file.lineCount) diff lines")
                 .foregroundStyle(.secondary)
             if threadCount > 0 {
                 Label("\(threadCount)", systemImage: "bubble.left.fill")
@@ -323,61 +305,35 @@ private struct ChangeCanvasCard: View {
         .padding(.horizontal, 12)
     }
 
-    @ViewBuilder
-    private var preview: some View {
-        if file.isBinary {
-            Label("Binary file", systemImage: "doc.zipper")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        } else if file.tooLarge {
-            Label("Patch unavailable", systemImage: "exclamationmark.triangle")
-                .font(.caption)
-                .foregroundStyle(.orange)
-        } else if previewLines.isEmpty {
-            Text("No textual changes")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        } else {
-            VStack(alignment: .leading, spacing: 2) {
-                ForEach(Array(previewLines.enumerated()), id: \.offset) { _, line in
-                    HStack(spacing: 5) {
-                        Text(line.kind == .added ? "+" : "−")
-                            .fontWeight(.bold)
-                            .foregroundStyle(line.kind == .added ? .green : .red)
-                            .frame(width: 9)
-                        Text(line.content)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                    }
-                    .font(.system(size: 10, design: .monospaced))
+    private var fullPatch: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(file.hunks.enumerated()), id: \.offset) { _, hunk in
+                Text(hunk.header)
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
                     .foregroundStyle(.secondary)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 2)
-                    .background(
-                        (line.kind == .added ? Color.green : Color.red).opacity(0.07),
-                        in: RoundedRectangle(cornerRadius: 3)
-                    )
-                }
-                if changedLineCount > previewLines.count {
-                    Text("+\(changedLineCount - previewLines.count) more changed lines")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .padding(.top, 2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.blue.opacity(0.08))
+
+                ForEach(Array(hunk.lines.enumerated()), id: \.offset) { _, line in
+                    ChangeCanvasLine(line: line)
                 }
             }
         }
+        .clipShape(RoundedRectangle(cornerRadius: 5))
+        .padding(.horizontal, 12)
+    }
+
+    private func unavailableState(_ title: String, systemImage: String) -> some View {
+        Label(title, systemImage: systemImage)
+            .font(.caption)
+            .foregroundStyle(title == "Patch unavailable" ? .orange : .secondary)
+            .padding(14)
     }
 
     private var allLines: [DiffLine] {
         file.hunks.flatMap(\.lines)
-    }
-
-    private var previewLines: [DiffLine] {
-        allLines.filter { $0.kind != .context }.prefix(6).map { $0 }
-    }
-
-    private var changedLineCount: Int {
-        file.additions + file.deletions
     }
 
     private var threadCount: Int {
@@ -415,13 +371,70 @@ private struct ChangeCanvasCard: View {
     }
 }
 
+private struct ChangeCanvasLine: View {
+    let line: DiffLine
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 0) {
+            Text(number(line.oldLine))
+                .frame(width: 34, alignment: .trailing)
+            Text(number(line.newLine))
+                .frame(width: 34, alignment: .trailing)
+            Text(prefix)
+                .fontWeight(.bold)
+                .frame(width: 14)
+            Text(line.content.isEmpty ? " " : line.content)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .font(.system(size: 10, design: .monospaced))
+        .foregroundStyle(.primary.opacity(0.88))
+        .padding(.horizontal, 4)
+        .padding(.vertical, 2)
+        .background(backgroundColor)
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(accentColor)
+                .frame(width: 2)
+        }
+    }
+
+    private var prefix: String {
+        switch line.kind {
+        case .added: return "+"
+        case .removed: return "−"
+        case .context: return " "
+        }
+    }
+
+    private var backgroundColor: Color {
+        switch line.kind {
+        case .added: return .green.opacity(0.13)
+        case .removed: return .red.opacity(0.13)
+        case .context: return .clear
+        }
+    }
+
+    private var accentColor: Color {
+        switch line.kind {
+        case .added: return .green.opacity(0.8)
+        case .removed: return .red.opacity(0.8)
+        case .context: return .clear
+        }
+    }
+
+    private func number(_ value: Int?) -> String {
+        value.map(String.init) ?? ""
+    }
+}
+
 private struct ChangeDensityStrip: View {
     let lines: [DiffLine]
-    let isBinary: Bool
+    let isUnavailable: Bool
 
     var body: some View {
         Canvas { context, size in
-            if isBinary || lines.isEmpty {
+            if isUnavailable || lines.isEmpty {
                 context.fill(
                     Path(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: 3),
                     with: .color(Color.gray.opacity(0.16))
@@ -453,7 +466,7 @@ private struct ChangeDensityStrip: View {
     }
 
     private var densityAccessibilityLabel: String {
-        guard !isBinary else { return "Binary file" }
+        guard !isUnavailable else { return "Patch unavailable" }
         let additions = lines.filter { $0.kind == .added }.count
         let deletions = lines.filter { $0.kind == .removed }.count
         return "Change density, \(additions) additions and \(deletions) deletions"
