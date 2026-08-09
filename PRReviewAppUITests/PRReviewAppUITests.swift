@@ -21,6 +21,7 @@ final class PRReviewAppUITests: XCTestCase {
         let app = launchDemo()
         XCTAssertTrue(app.descendants(matching: .any)["pr-header"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.descendants(matching: .any)["file-sidebar"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["change-canvas-pane"].exists)
     }
 
     func testOpenDemoViaWelcomeButton() {
@@ -45,9 +46,16 @@ final class PRReviewAppUITests: XCTestCase {
     func testAddDraftViaToolbarComment() {
         let app = launchDemo()
         XCTAssertTrue(app.descendants(matching: .any)["pr-header"].waitForExistence(timeout: 10))
-        // Click a diff line (identifiers are keyed: diff-line-<path>-h<hunk>-…).
+        // The canvas is the default overview. Open one file card, then click a
+        // diff line (identifiers are keyed: diff-line-<path>-h<hunk>-…).
+        let firstCard = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH 'canvas-file-'"))
+            .firstMatch
+        XCTAssertTrue(firstCard.waitForExistence(timeout: 10))
+        firstCard.click()
         let firstLine = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "identifier BEGINSWITH 'diff-line-'")).firstMatch
+            .matching(NSPredicate(format: "identifier BEGINSWITH 'diff-line-'"))
+            .firstMatch
         XCTAssertTrue(firstLine.waitForExistence(timeout: 10))
         firstLine.click()
         let commentButton = app.buttons["toolbar-comment"]

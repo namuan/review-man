@@ -5,16 +5,46 @@ import PRReviewKit
 /// badges, binary/too-large markers, and viewed checkmarks.
 public struct FileSidebarView: View {
     @ObservedObject public var store: ReviewSessionStore
+    @Binding public var showCanvas: Bool
 
-    public init(store: ReviewSessionStore) {
+    private static let canvasSelection = "__change_canvas__"
+
+    public init(store: ReviewSessionStore, showCanvas: Binding<Bool>) {
         self.store = store
+        self._showCanvas = showCanvas
     }
 
     public var body: some View {
         List(selection: Binding(
-            get: { store.selection.filePath },
-            set: { store.select(filePath: $0) }
+            get: { showCanvas ? Self.canvasSelection : store.selection.filePath },
+            set: { selection in
+                if selection == Self.canvasSelection {
+                    showCanvas = true
+                } else if let selection {
+                    showCanvas = false
+                    store.select(filePath: selection)
+                }
+            }
         )) {
+            Section("Review") {
+                Label {
+                    HStack {
+                        Text("Canvas")
+                        Spacer()
+                        Text("\(store.review?.files.count ?? 0)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                } icon: {
+                    Image(systemName: "square.grid.3x3")
+                }
+                .tag(Self.canvasSelection)
+                .listRowBackground(showCanvas ? Color.accentColor.opacity(0.12) : Color.clear)
+                .accessibilityIdentifier("sidebar-change-canvas")
+                .accessibilityLabel("Change canvas, \(store.review?.files.count ?? 0) files")
+            }
+
             Section("Files") {
                 ForEach(store.filteredSidebarItems) { item in
                     row(item)
@@ -24,7 +54,7 @@ public struct FileSidebarView: View {
             }
         }
         .searchable(text: $store.sidebarSearch, prompt: "Filter files")
-        .navigationTitle("Files")
+        .navigationTitle(showCanvas ? "Canvas" : "Files")
         .accessibilityIdentifier("file-sidebar")
     }
 

@@ -9,6 +9,9 @@ public struct ReviewWindowView: View {
     @State private var showOpenSheet = false
     @State private var sheetReference = ""
     @State private var sidebarVisible = true
+    /// The change canvas is the default overview mode. Selecting a file card
+    /// or a file in the sidebar switches back to the focused-file view.
+    @State private var showCanvas = true
     @State private var showCloseWarning = false
 
     public init(store: ReviewSessionStore) {
@@ -91,6 +94,15 @@ public struct ReviewWindowView: View {
         ToolbarItemGroup {
             if store.state == .loaded || store.state == .empty {
                 let availability = ReviewCommandAvailability(context: store.commandContext())
+                Picker("Diff view", selection: $showCanvas) {
+                    Text("Canvas").tag(true)
+                    Text("Selected file").tag(false)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 170)
+                .accessibilityLabel("Diff view")
+                .accessibilityIdentifier("diff-view-picker")
+
                 Button {
                     showOpenSheet = true
                 } label: {
@@ -239,7 +251,7 @@ public struct ReviewWindowView: View {
 
     private var loadedShell: some View {
         NavigationSplitView(columnVisibility: sidebarBinding) {
-            FileSidebarView(store: store)
+            FileSidebarView(store: store, showCanvas: $showCanvas)
                 .navigationSplitViewColumnWidth(min: 180, ideal: 240, max: 380)
         } detail: {
             detailPane
@@ -268,6 +280,8 @@ public struct ReviewWindowView: View {
                         title: "No changed files",
                         message: "This pull request has no file changes."
                     )
+                } else if showCanvas {
+                    ChangeCanvasView(store: store, files: review.files, showCanvas: $showCanvas)
                 } else if let file = store.selectedFile {
                     DiffView(store: store, file: file)
                 } else {
