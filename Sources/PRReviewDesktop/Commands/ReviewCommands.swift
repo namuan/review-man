@@ -1,26 +1,12 @@
 import SwiftUI
 import PRReviewKit
 
-/// Focused command target: the store of the active review window. Windows
-/// publish their store via `.focusedSceneValue`, and commands act only on the
-/// focused window.
-public struct ReviewCommandTargetKey: FocusedValueKey {
-    public typealias Value = ReviewSessionStore
-}
-
-public extension FocusedValues {
-    var reviewCommandTarget: ReviewSessionStore? {
-        get { self[ReviewCommandTargetKey.self] }
-        set { self[ReviewCommandTargetKey.self] = newValue }
-    }
-}
-
-/// SwiftUI Commands for the review window. Presentation only — enablement is
-/// derived from `ReviewCommandAvailability`, and actions re-check their
-/// preconditions in the store. The focused store drives both.
+/// SwiftUI Commands for the review window. The active window publishes its
+/// observable store with `.focusedSceneObject`, so command enablement refreshes
+/// as loading completes and review state changes.
 public struct ReviewCommands: Commands {
 
-    @FocusedValue(\.reviewCommandTarget) private var focusedStore
+    @FocusedObject private var focusedStore: ReviewSessionStore?
 
     public init() {}
 
@@ -51,7 +37,7 @@ public struct ReviewCommands: Commands {
 
         CommandGroup(after: .pasteboard) {
             Divider()
-            Button("Find in Files") {
+            Button("Focus File Filter") {
                 focusedStore?.requestFocus = .sidebarSearch
             }
             .keyboardShortcut("f", modifiers: .command)
@@ -161,6 +147,20 @@ public struct ReviewCommands: Commands {
 
             Divider()
 
+            Button("Collapse All Folders") {
+                NotificationCenter.default.post(name: .reviewCollapseAllFoldersRequest, object: focusedStore)
+            }
+            .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
+            .disabled(!availability.canFind)
+
+            Button("Expand All Folders") {
+                NotificationCenter.default.post(name: .reviewExpandAllFoldersRequest, object: focusedStore)
+            }
+            .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
+            .disabled(!availability.canFind)
+
+            Divider()
+
             Button("Previous File") {
                 NotificationCenter.default.post(name: .reviewPreviousFileRequest, object: focusedStore)
             }
@@ -205,6 +205,8 @@ public extension Notification.Name {
     static let reviewSubmitRequest = Notification.Name("review.submit")
     static let reviewRefreshRequest = Notification.Name("review.refresh")
     static let reviewToggleSidebarRequest = Notification.Name("review.toggleSidebar")
+    static let reviewCollapseAllFoldersRequest = Notification.Name("review.collapseAllFolders")
+    static let reviewExpandAllFoldersRequest = Notification.Name("review.expandAllFolders")
     static let reviewCanvasZoomInRequest = Notification.Name("review.canvasZoomIn")
     static let reviewCanvasZoomOutRequest = Notification.Name("review.canvasZoomOut")
     static let reviewCanvasResetZoomRequest = Notification.Name("review.canvasResetZoom")

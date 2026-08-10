@@ -36,8 +36,10 @@ separate windows and no duplicates for the same repository + PR.
 - **Review**: comment, approve, or request changes with a summary; orphaned
   drafts (whose anchor left the diff) are excluded from submission and
   reattach automatically when their line returns.
-- **File sidebar** with native search, status letters, ± counts, comment
-  badges, and locally-persisted viewed marks.
+- **File sidebar** with an inline filter, expandable folder tree, status
+  letters, ± counts, comment badges, and locally-persisted viewed marks.
+  Press Cmd-F to focus the filter, Cmd-Option-Left to collapse folders, or
+  Cmd-Option-Right to expand them.
 - **`gh` onboarding**: the app discovers `gh` from your PATH, Apple Silicon
   Homebrew, or MacPorts (or a user-selected executable) and shows actionable
   status for missing, unauthenticated, expired, or under-scoped

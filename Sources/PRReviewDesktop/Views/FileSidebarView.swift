@@ -7,21 +7,32 @@ import PRReviewKit
 public struct FileSidebarView: View {
     @ObservedObject public var store: ReviewSessionStore
     @Binding public var showCanvas: Bool
+    @Binding public var focusSearch: Bool
 
     private static let canvasSelection = "__change_canvas__"
     /// Folder paths explicitly collapsed by the reviewer. All folders start
     /// expanded so a small PR remains as scannable as the previous flat list.
     @State private var collapsedFolderPaths: Set<String> = []
+    @FocusState private var isSearchFieldFocused: Bool
 
-    public init(store: ReviewSessionStore, showCanvas: Binding<Bool>) {
+    public init(
+        store: ReviewSessionStore,
+        showCanvas: Binding<Bool>,
+        focusSearch: Binding<Bool>
+    ) {
         self.store = store
         self._showCanvas = showCanvas
+        self._focusSearch = focusSearch
     }
 
     public var body: some View {
         let fileTree = FileSidebarTreeNode.build(from: store.filteredSidebarItems)
 
-        List(selection: Binding(
+        VStack(spacing: 0) {
+            fileFilter
+            Divider()
+
+            List(selection: Binding(
             get: { showCanvas ? Self.canvasSelection : store.selection.filePath },
             set: { selection in
                 if selection == Self.canvasSelection {
@@ -66,11 +77,8 @@ public struct FileSidebarView: View {
                     }
                 }
             }
+            }
         }
-        // Explicit sidebar placement keeps the search field in the leading
-        // file list instead of allowing macOS to move it into the window
-        // toolbar.
-        .searchable(text: $store.sidebarSearch, placement: .sidebar, prompt: "Filter files")
         .onChange(of: store.sidebarSearch) { query in
             // Search results should never be hidden inside a folder that was
             // previously collapsed.
@@ -78,8 +86,61 @@ public struct FileSidebarView: View {
                 collapsedFolderPaths.removeAll()
             }
         }
+        .onChange(of: focusSearch) { shouldFocus in
+            if shouldFocus { focusFileFilter() }
+        }
+        .onAppear { focusFileFilter() }
+        .onReceive(NotificationCenter.default.publisher(for: .reviewCollapseAllFoldersRequest)) { note in
+            guard targetsThisStore(note) else { return }
+            collapsedFolderPaths = FileSidebarTreeNode.folderIDs(from: store.review?.sidebarItems ?? [])
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .reviewExpandAllFoldersRequest)) { note in
+            guard targetsThisStore(note) else { return }
+            collapsedFolderPaths.removeAll()
+        }
         .navigationTitle(showCanvas ? "Canvas" : "Files")
         .accessibilityIdentifier("file-sidebar")
+    }
+
+    private var fileFilter: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+
+            TextField("Filter files", text: $store.sidebarSearch)
+                .textFieldStyle(.plain)
+                .focused($isSearchFieldFocused)
+                .accessibilityIdentifier("sidebar-file-filter")
+
+            if !store.sidebarSearch.isEmpty {
+                Button {
+                    store.sidebarSearch = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Clear file filter")
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
+    }
+
+    private func focusFileFilter() {
+        guard focusSearch else { return }
+        // The sidebar can be constructed one layout pass after Cmd-F reveals
+        // it, so defer setting focus until its native text field is attached.
+        DispatchQueue.main.async {
+            isSearchFieldFocused = true
+            focusSearch = false
+        }
+    }
+
+    private func targetsThisStore(_ note: Notification) -> Bool {
+        guard let target = note.object as? ReviewSessionStore else { return true }
+        return target === store
     }
 }
 
@@ -239,6 +300,21 @@ struct FileSidebarTreeNode: Identifiable, Equatable {
 
     static func build(from items: [FileSidebarItem]) -> [FileSidebarTreeNode] {
         build(items, depth: 0, folderPath: "")
+    }
+
+    /// IDs for every folder in the complete (unfiltered) sidebar tree. The
+    /// menu command uses these to make Collapse All deterministic even while
+    /// a search result is narrowing the visible branches.
+    static func folderIDs(from items: [FileSidebarItem]) -> Set<String> {
+        var identifiers: Set<String> = []
+        func collect(_ nodes: [FileSidebarTreeNode]) {
+            for node in nodes {
+                if node.item == nil { identifiers.insert(node.id) }
+                collect(node.children)
+            }
+        }
+        collect(build(from: items))
+        return identifiers
     }
 
     private static func build(

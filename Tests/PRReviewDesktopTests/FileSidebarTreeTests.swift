@@ -17,6 +17,15 @@ final class FileSidebarTreeTests: XCTestCase {
         XCTAssertEqual(sources.fileCount, 2)
         XCTAssertEqual(sources.children.map(\.name), ["Views", "App.swift"])
         XCTAssertEqual(sources.children.first?.children.map(\.name), ["ChangeCanvasView.swift"])
+        XCTAssertEqual(
+            FileSidebarTreeNode.folderIDs(from: [
+                item("README.md"),
+                item("Sources/App.swift"),
+                item("Sources/Views/ChangeCanvasView.swift"),
+                item("Tests/AppTests.swift")
+            ]),
+            ["folder:Sources", "folder:Sources/Views", "folder:Tests"]
+        )
     }
 
     func testFilteredItemsProduceOnlyTheirContainingFoldersAndCounts() throws {

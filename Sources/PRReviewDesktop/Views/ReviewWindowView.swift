@@ -9,6 +9,9 @@ public struct ReviewWindowView: View {
     @State private var showOpenSheet = false
     @State private var sheetReference = ""
     @State private var sidebarVisible = true
+    /// One-shot request passed to the sidebar after it is made visible, so
+    /// Cmd-F can put the insertion point in its file filter.
+    @State private var focusSidebarSearch = false
     /// The change canvas is the default overview mode. Selecting a file card
     /// or a file in the sidebar switches back to the focused-file view.
     @State private var showCanvas = true
@@ -33,7 +36,7 @@ public struct ReviewWindowView: View {
                 failureView(message: message)
             }
         }
-        .focusedSceneValue(\.reviewCommandTarget, store)
+        .focusedSceneObject(store)
         .background(CloseWarningBridge(store: store, showWarning: $showCloseWarning))
         .alert("Local changes may not be saved", isPresented: $showCloseWarning) {
             Button("Keep Editing", role: .cancel) {}
@@ -56,6 +59,7 @@ public struct ReviewWindowView: View {
         .onChange(of: store.requestFocus) { _ in
             if store.requestFocus == .sidebarSearch {
                 sidebarVisible = true   // reveal the search surface if hidden
+                focusSidebarSearch = true
             }
             if store.requestFocus != .none { store.requestFocus = .none }
         }
@@ -255,7 +259,11 @@ public struct ReviewWindowView: View {
 
     private var loadedShell: some View {
         NavigationSplitView(columnVisibility: sidebarBinding) {
-            FileSidebarView(store: store, showCanvas: $showCanvas)
+            FileSidebarView(
+                store: store,
+                showCanvas: $showCanvas,
+                focusSearch: $focusSidebarSearch
+            )
                 .navigationSplitViewColumnWidth(min: 180, ideal: 240, max: 380)
         } detail: {
             detailPane

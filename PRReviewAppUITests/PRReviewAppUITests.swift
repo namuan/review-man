@@ -36,7 +36,7 @@ final class PRReviewAppUITests: XCTestCase {
     func testFilterFilesInSidebar() {
         let app = launchDemo()
         XCTAssertTrue(app.descendants(matching: .any)["pr-header"].waitForExistence(timeout: 10))
-        let searchField = app.searchFields.firstMatch
+        let searchField = app.textFields["sidebar-file-filter"]
         XCTAssertTrue(searchField.waitForExistence(timeout: 10))
         searchField.click()
         searchField.typeText("README")
