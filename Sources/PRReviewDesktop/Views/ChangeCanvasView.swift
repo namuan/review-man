@@ -50,6 +50,9 @@ public struct ChangeCanvasView: View {
 
     @State private var pinchStartZoom: CGFloat?
     @State private var canvasContentSize = CGSize.zero
+    /// At most one condensed card expands inline at a time, preserving the
+    /// large-PR canvas's light layout while allowing focused inspection.
+    @State private var expandedCondensedPath: String?
 
     public static func clampedZoom(_ value: CGFloat) -> CGFloat {
         min(maximumZoom, max(minimumZoom, value))
@@ -96,6 +99,11 @@ public struct ChangeCanvasView: View {
                 }
             }
             .accessibilityIdentifier("change-canvas-pane")
+            .onChange(of: store.review?.pr?.headRefOid) { _ in
+                // A reload/new PR must not carry an inline expansion to a
+                // coincidentally named file in the next review.
+                expandedCondensedPath = nil
+            }
         }
     }
 
@@ -119,8 +127,8 @@ public struct ChangeCanvasView: View {
                     .background(Color.orange.opacity(0.16), in: Capsule())
                     .foregroundStyle(.orange)
                     .help(scale == .condensed
-                        ? "Large PR — cards show file names. Open a card for the full diff."
-                        : "Very large PR — cards show file names. Open a card for the full diff.")
+                        ? "Option-click a file name to expand it in the canvas; click to open the focused diff."
+                        : "Very large PR — cards show file names. Click a card to open the focused diff.")
             }
             Text("\(files.count) files")
                 .font(.caption)
@@ -176,7 +184,7 @@ public struct ChangeCanvasView: View {
         case .full:
             return "Complete patches · Pinch or ⌘+/⌘− to zoom"
         case .condensed:
-            return "File names only for large PRs · Pinch or ⌘+/⌘− to zoom"
+            return "Option-click a file name to expand · Pinch or ⌘+/⌘− to zoom"
         case .summary:
             return "File names only for very large PRs · Pinch or ⌘+/⌘− to zoom"
         }
@@ -278,13 +286,20 @@ public struct ChangeCanvasView: View {
     }
 
     private func fileCard(_ file: DiffFile, width: CGFloat) -> some View {
-        Button {
-            open(file)
+        let isInlineExpanded = expandedCondensedPath == file.path
+        return Button {
+            handleCardClick(file)
         } label: {
-            ChangeCanvasCard(store: store, file: file, scale: scale)
+            ChangeCanvasCard(
+                store: store,
+                file: file,
+                scale: scale,
+                isInlineExpanded: isInlineExpanded
+            )
         }
         .buttonStyle(.plain)
         .frame(width: width, alignment: .topLeading)
+        .help(cardHelp(isInlineExpanded: isInlineExpanded))
         .contextMenu {
             Button("Open focused diff") { open(file) }
             Button(fileIsViewed(file) ? "Mark unviewed" : "Mark viewed") {
@@ -339,6 +354,21 @@ public struct ChangeCanvasView: View {
         context.stroke(path, with: .color(Color.gray.opacity(0.09)), lineWidth: 0.5)
     }
 
+    private func handleCardClick(_ file: DiffFile) {
+        if scale == .condensed, NSEvent.modifierFlags.contains(.option) {
+            expandedCondensedPath = expandedCondensedPath == file.path ? nil : file.path
+        } else {
+            open(file)
+        }
+    }
+
+    private func cardHelp(isInlineExpanded: Bool) -> String {
+        guard scale == .condensed else { return "Open focused diff" }
+        return isInlineExpanded
+            ? "Option-click to collapse this patch"
+            : "Option-click to expand this patch in the canvas"
+    }
+
     private func open(_ file: DiffFile) {
         store.select(filePath: file.path)
         showCanvas = false
@@ -375,14 +405,15 @@ private struct ChangeCanvasCard: View {
     @ObservedObject var store: ReviewSessionStore
     let file: DiffFile
     let scale: CanvasScale
+    let isInlineExpanded: Bool
 
     var body: some View {
         Group {
-            if scale == .full {
+            if scale == .full || isInlineExpanded {
                 detailedBody
             } else {
-                // Both degraded tiers show the same minimal card: the file
-                // name. The full diff is one click away in the focused view.
+                // Degraded tiers show the minimal file-name card by default.
+                // Condensed cards can opt into one inline full patch.
                 summaryBody
             }
         }
@@ -448,8 +479,8 @@ private struct ChangeCanvasCard: View {
             }
 
             HStack(spacing: 5) {
-                Image(systemName: "arrow.up.right")
-                Text("Open focused diff for comments")
+                Image(systemName: isInlineExpanded ? "option" : "arrow.up.right")
+                Text(isInlineExpanded ? "Option-click to collapse" : "Open focused diff for comments")
                 Spacer()
                 if fileIsViewed {
                     Image(systemName: "checkmark.circle.fill")
