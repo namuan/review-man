@@ -1,13 +1,17 @@
+import Foundation
 import SwiftUI
 import PRReviewKit
 
-/// Collapsible file sidebar: native search, status letters, ± counts, comment
-/// badges, binary/too-large markers, and viewed checkmarks.
+/// Collapsible file sidebar: native search, a folder tree, status letters, ±
+/// counts, comment badges, binary/too-large markers, and viewed checkmarks.
 public struct FileSidebarView: View {
     @ObservedObject public var store: ReviewSessionStore
     @Binding public var showCanvas: Bool
 
     private static let canvasSelection = "__change_canvas__"
+    /// Folder paths explicitly collapsed by the reviewer. All folders start
+    /// expanded so a small PR remains as scannable as the previous flat list.
+    @State private var collapsedFolderPaths: Set<String> = []
 
     public init(store: ReviewSessionStore, showCanvas: Binding<Bool>) {
         self.store = store
@@ -15,6 +19,8 @@ public struct FileSidebarView: View {
     }
 
     public var body: some View {
+        let fileTree = FileSidebarTreeNode.build(from: store.filteredSidebarItems)
+
         List(selection: Binding(
             get: { showCanvas ? Self.canvasSelection : store.selection.filePath },
             set: { selection in
@@ -46,10 +52,18 @@ public struct FileSidebarView: View {
             }
 
             Section("Files") {
-                ForEach(store.filteredSidebarItems) { item in
-                    row(item)
-                        .tag(item.path)
-                        .accessibilityIdentifier("sidebar-row-\(item.path)")
+                if fileTree.isEmpty {
+                    Label("No matching files", systemImage: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("sidebar-no-file-matches")
+                } else {
+                    ForEach(fileTree) { node in
+                        SidebarFileTreeRow(
+                            store: store,
+                            node: node,
+                            collapsedFolderPaths: $collapsedFolderPaths
+                        )
+                    }
                 }
             }
         }
@@ -57,19 +71,95 @@ public struct FileSidebarView: View {
         // file list instead of allowing macOS to move it into the window
         // toolbar.
         .searchable(text: $store.sidebarSearch, placement: .sidebar, prompt: "Filter files")
+        .onChange(of: store.sidebarSearch) { query in
+            // Search results should never be hidden inside a folder that was
+            // previously collapsed.
+            if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                collapsedFolderPaths.removeAll()
+            }
+        }
         .navigationTitle(showCanvas ? "Canvas" : "Files")
         .accessibilityIdentifier("file-sidebar")
     }
+}
 
-    private func row(_ item: FileSidebarItem) -> some View {
+/// One recursive row in the sidebar's folder tree. A disclosure group is used
+/// instead of a flat OutlineGroup so folders can start expanded and matching
+/// search results can be revealed deterministically.
+private struct SidebarFileTreeRow: View {
+    @ObservedObject var store: ReviewSessionStore
+    let node: FileSidebarTreeNode
+    @Binding var collapsedFolderPaths: Set<String>
+
+    var body: some View {
+        if let item = node.item {
+            SidebarFileItemRow(store: store, item: item, displayName: node.name)
+                .tag(item.path)
+                .accessibilityIdentifier("sidebar-row-\(item.path)")
+        } else {
+            DisclosureGroup(isExpanded: folderExpansion) {
+                ForEach(node.children) { child in
+                    SidebarFileTreeRow(
+                        store: store,
+                        node: child,
+                        collapsedFolderPaths: $collapsedFolderPaths
+                    )
+                }
+            } label: {
+                folderLabel
+            }
+            .accessibilityIdentifier("sidebar-folder-\(node.path)")
+            .accessibilityLabel("\(node.name), folder, \(node.fileCount) \(node.fileCount == 1 ? "file" : "files")")
+        }
+    }
+
+    private var folderExpansion: Binding<Bool> {
+        Binding(
+            get: { !collapsedFolderPaths.contains(node.id) },
+            set: { isExpanded in
+                if isExpanded {
+                    collapsedFolderPaths.remove(node.id)
+                } else {
+                    collapsedFolderPaths.insert(node.id)
+                }
+            }
+        )
+    }
+
+    private var folderLabel: some View {
+        Label {
+            HStack {
+                Text(node.name)
+                    .fontWeight(.medium)
+                Spacer(minLength: 4)
+                Text("\(node.fileCount)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+        } icon: {
+            Image(systemName: folderExpansion.wrappedValue ? "folder.open" : "folder")
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+/// Preserves the metadata and context menu from the old flat row while the
+/// tree supplies its concise, folder-relative display name.
+private struct SidebarFileItemRow: View {
+    @ObservedObject var store: ReviewSessionStore
+    let item: FileSidebarItem
+    let displayName: String
+
+    var body: some View {
         HStack(spacing: 6) {
             Text(item.statusLetter)
                 .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                .foregroundStyle(statusColor(item.statusLetter))
+                .foregroundStyle(statusColor)
                 .frame(width: 14)
                 .accessibilityLabel("status \(item.statusLetter)")
 
-            Text(displayPath(item))
+            Text(title)
                 .font(.system(size: 12, design: .monospaced))
                 .lineLimit(1)
                 .truncationMode(.middle)
@@ -115,22 +205,88 @@ public struct FileSidebarView: View {
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(displayPath(item)), status \(item.statusLetter)\(item.threadCount > 0 ? ", \(item.threadCount) comments" : "")\(item.isViewed ? ", viewed" : "")")
+        .accessibilityLabel("\(item.path), status \(item.statusLetter)\(item.threadCount > 0 ? ", \(item.threadCount) comments" : "")\(item.isViewed ? ", viewed" : "")")
     }
 
-    private func displayPath(_ item: FileSidebarItem) -> String {
-        guard let old = item.oldPath, old != item.path, item.statusLetter == "R" else {
-            return item.path
+    private var title: String {
+        guard let oldPath = item.oldPath, oldPath != item.path, item.statusLetter == "R" else {
+            return displayName
         }
-        return "\(old) → \(item.path)"
+        let oldName = oldPath.split(separator: "/").last.map(String.init) ?? oldPath
+        return oldName == displayName ? oldPath : "\(oldName) → \(displayName)"
     }
 
-    private func statusColor(_ letter: String) -> SwiftUI.Color {
-        switch letter {
+    private var statusColor: SwiftUI.Color {
+        switch item.statusLetter {
         case "A": return .green
         case "D": return .red
         case "R": return .blue
         default: return .secondary
         }
+    }
+}
+
+/// A lightweight, pure representation of the sidebar tree. Its builder runs
+/// over the already filtered items, so each visible folder contains only the
+/// matching files and exposes an accurate badge count.
+struct FileSidebarTreeNode: Identifiable, Equatable {
+    let id: String
+    let path: String
+    let name: String
+    let item: FileSidebarItem?
+    let children: [FileSidebarTreeNode]
+    let fileCount: Int
+
+    static func build(from items: [FileSidebarItem]) -> [FileSidebarTreeNode] {
+        build(items, depth: 0, folderPath: "")
+    }
+
+    private static func build(
+        _ items: [FileSidebarItem],
+        depth: Int,
+        folderPath: String
+    ) -> [FileSidebarTreeNode] {
+        let folderGroups = Dictionary(grouping: items.filter {
+            pathComponents($0.path).count > depth + 1
+        }) { item in
+            pathComponents(item.path)[depth]
+        }
+
+        let folders = folderGroups.keys
+            .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+            .map { name in
+                let descendants = folderGroups[name] ?? []
+                let path = folderPath.isEmpty ? name : "\(folderPath)/\(name)"
+                return FileSidebarTreeNode(
+                    id: "folder:\(path)",
+                    path: path,
+                    name: name,
+                    item: nil,
+                    children: build(descendants, depth: depth + 1, folderPath: path),
+                    fileCount: descendants.count
+                )
+            }
+
+        let files = items
+            .filter { pathComponents($0.path).count == depth + 1 }
+            .sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+            .map { item in
+                FileSidebarTreeNode(
+                    id: "file:\(item.path)",
+                    path: item.path,
+                    name: pathComponents(item.path).last ?? item.path,
+                    item: item,
+                    children: [],
+                    fileCount: 1
+                )
+            }
+
+        // Folders first mirrors Finder/Xcode source lists and makes the
+        // hierarchy visually scannable before root-level files.
+        return folders + files
+    }
+
+    private static func pathComponents(_ path: String) -> [String] {
+        path.split(separator: "/").map(String.init)
     }
 }
