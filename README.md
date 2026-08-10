@@ -24,9 +24,8 @@ separate windows and no duplicates for the same repository + PR.
   click a card to open the focused diff for line-level comments. Pinch on a
   trackpad or use ⌘+/⌘−/⌘0 to zoom.
 - **Large-PR degradation**: the canvas automatically tiers itself by PR size.
-  Small/medium PRs render complete patches; large PRs (demo `large`) show
-  condensed cards with only the changed lines, capped per file; very large
-  PRs (demo `xlarge`) show file-name-only cards. The focused diff always
+  Small/medium PRs render complete patch cards; larger PRs (demo `large` and
+  `xlarge`) collapse to file-name-only cards. The focused diff always
   remains the full, commentable view.
 - **Comment inline**: click a line and add a draft (deleted lines become
   LEFT-side comments), or Shift-click for a multi-line range comment. Drafts

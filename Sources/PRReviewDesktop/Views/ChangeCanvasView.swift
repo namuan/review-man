@@ -8,9 +8,9 @@ import PRReviewKit
 /// of the board reflects the shape of the PR. Selecting a card opens the
 /// existing focused diff view for comments and line-level review.
 /// How much detail the change canvas renders, chosen from the PR's size.
-/// Full cards render every hunk and line; condensed cards show only the
-/// changed lines as one cheap text block; summary cards are just the file
-/// names. This keeps the canvas usable on `make demo` scale PRs.
+/// Full cards render every hunk and line; once a PR is large enough to
+/// degrade, cards collapse to the file name only. This keeps the canvas
+/// usable on `make demo` scale PRs.
 public enum CanvasScale: Equatable {
     case full
     case condensed
@@ -119,8 +119,8 @@ public struct ChangeCanvasView: View {
                     .background(Color.orange.opacity(0.16), in: Capsule())
                     .foregroundStyle(.orange)
                     .help(scale == .condensed
-                        ? "Large PR — cards show changed lines only. Open a card for the full diff."
-                        : "Very large PR — cards show summaries only. Open a card for the full diff.")
+                        ? "Large PR — cards show file names. Open a card for the full diff."
+                        : "Very large PR — cards show file names. Open a card for the full diff.")
             }
             Text("\(files.count) files")
                 .font(.caption)
@@ -176,7 +176,7 @@ public struct ChangeCanvasView: View {
         case .full:
             return "Complete patches · Pinch or ⌘+/⌘− to zoom"
         case .condensed:
-            return "Condensed for large PRs · Pinch or ⌘+/⌘− to zoom"
+            return "File names only for large PRs · Pinch or ⌘+/⌘− to zoom"
         case .summary:
             return "File names only for very large PRs · Pinch or ⌘+/⌘− to zoom"
         }
@@ -341,7 +341,7 @@ public struct ChangeCanvasView: View {
 
     private func canvasAccessibilityLabel(for file: DiffFile) -> String {
         let viewed = fileIsViewed(file) ? ", viewed" : ""
-        let detail = scale == .full ? "complete patch" : "change summary"
+        let detail = scale == .full ? "complete patch" : "file entry"
         return "\(file.path), \(detail), \(file.additions) additions, \(file.deletions) deletions\(viewed)"
     }
 }
@@ -355,23 +355,21 @@ private struct CanvasContentSizeKey: PreferenceKey {
 }
 
 /// A variable-height file card. The rendered detail follows `scale`: full
-/// cards show every hunk and line, condensed cards show only the changed
-/// lines, and summary cards (very large PRs) are just the file name.
+/// cards show every hunk and line; every degraded tier (condensed and
+/// summary) is just the file name.
 private struct ChangeCanvasCard: View {
     @ObservedObject var store: ReviewSessionStore
     let file: DiffFile
     let scale: CanvasScale
 
-    /// Condensed cards cap the rendered changed lines per file; the remainder
-    /// is summarized in the footer and available in the focused diff.
-    private static let condensedLineCap = 100
-
     var body: some View {
         Group {
-            if scale == .summary {
-                summaryBody
-            } else {
+            if scale == .full {
                 detailedBody
+            } else {
+                // Both degraded tiers show the same minimal card: the file
+                // name. The full diff is one click away in the focused view.
+                summaryBody
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -384,7 +382,7 @@ private struct ChangeCanvasCard: View {
         .contentShape(RoundedRectangle(cornerRadius: 10))
     }
 
-    /// Very large PRs: the card is just the file name (plus its status letter
+    /// Degraded PRs: the card is just the file name (plus its status letter
     /// and viewed mark) so hundreds of cards stay instant to render.
     private var summaryBody: some View {
         HStack(spacing: 8) {
@@ -429,17 +427,10 @@ private struct ChangeCanvasCard: View {
                     .foregroundStyle(.secondary)
                     .padding(14)
             } else {
-                switch scale {
-                case .full:
-                    fullPatch
-                        .padding(.top, 8)
-                case .condensed:
-                    condensedPatch
-                        .padding(.top, 8)
-                case .summary:
-                    // Unreachable: summary cards use `summaryBody`.
-                    EmptyView()
-                }
+                // Only `.full` cards render a patch; degraded tiers show
+                // `summaryBody` instead of this body at all.
+                fullPatch
+                    .padding(.top, 8)
             }
 
             HStack(spacing: 5) {
@@ -491,7 +482,7 @@ private struct ChangeCanvasCard: View {
                 .foregroundStyle(.red)
             Text("·")
                 .foregroundStyle(.tertiary)
-            Text(metadataLineCount)
+            Text("\(file.lineCount) diff lines")
                 .foregroundStyle(.secondary)
             if threadCount > 0 {
                 Label("\(threadCount)", systemImage: "bubble.left.fill")
@@ -520,54 +511,6 @@ private struct ChangeCanvasCard: View {
         }
         .clipShape(RoundedRectangle(cornerRadius: 5))
         .padding(.horizontal, 12)
-    }
-
-    /// The changed lines only (no context), in diff order. This is the
-    /// content of condensed cards and makes up most of a large PR's size.
-    private var changedLines: [DiffLine] {
-        allLines.filter { $0.kind != .context }
-    }
-
-    private var metadataLineCount: String {
-        switch scale {
-        case .full:
-            return "\(file.lineCount) diff lines"
-        case .condensed, .summary:
-            return "\(changedLines.count) changed lines"
-        }
-    }
-
-    /// One Text block instead of one view per line: for hundreds of cards
-    /// this is the difference between thousands of SwiftUI views and a few.
-    private var condensedPatch: some View {
-        let lines = changedLines
-        let shown = lines.prefix(Self.condensedLineCap)
-        return VStack(alignment: .leading, spacing: 4) {
-            condensedText(shown)
-                .font(.system(size: 10, design: .monospaced))
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            if lines.count > Self.condensedLineCap {
-                Text("+\(lines.count - Self.condensedLineCap) more changed lines — open card for the full diff")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
-        }
-        .padding(.horizontal, 12)
-    }
-
-    private func condensedText(_ lines: ArraySlice<DiffLine>) -> Text {
-        var text = Text(verbatim: "")
-        for (index, line) in lines.enumerated() {
-            if index > 0 {
-                text = text + Text(verbatim: "\n")
-            }
-            let glyph = line.kind == .added ? "+ " : "− "
-            text = text + Text(verbatim: glyph + line.content)
-                .foregroundColor(line.kind == .added ? .green : .red)
-        }
-        return text
     }
 
     private func unavailableState(_ title: String, systemImage: String) -> some View {

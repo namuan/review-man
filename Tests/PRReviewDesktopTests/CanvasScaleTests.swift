@@ -4,7 +4,8 @@ import XCTest
 
 /// The canvas chooses a rendering tier from the PR's size so `make demo`-scale
 /// PRs stay interactive. These tests pin the tiers to the demo scale table:
-/// small/medium stay full, large condenses, xlarge degrades to summaries.
+/// small/medium render full patch cards, large and xlarge collapse to
+/// file-name cards.
 final class CanvasScaleTests: XCTestCase {
 
     private func makeFiles(count: Int, linesPerFile: Int) -> [DiffFile] {
