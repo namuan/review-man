@@ -9,8 +9,8 @@ import PRReviewKit
 /// existing focused diff view for comments and line-level review.
 /// How much detail the change canvas renders, chosen from the PR's size.
 /// Full cards render every hunk and line; condensed cards show only the
-/// changed lines as one cheap text block; summary cards drop the patch text
-/// entirely. This keeps the canvas usable on `make demo` scale PRs.
+/// changed lines as one cheap text block; summary cards are just the file
+/// names. This keeps the canvas usable on `make demo` scale PRs.
 public enum CanvasScale: Equatable {
     case full
     case condensed
@@ -178,7 +178,7 @@ public struct ChangeCanvasView: View {
         case .condensed:
             return "Condensed for large PRs · Pinch or ⌘+/⌘− to zoom"
         case .summary:
-            return "Overview for very large PRs · Pinch or ⌘+/⌘− to zoom"
+            return "File names only for very large PRs · Pinch or ⌘+/⌘− to zoom"
         }
     }
 
@@ -354,8 +354,9 @@ private struct CanvasContentSizeKey: PreferenceKey {
     }
 }
 
-/// A variable-height file card containing every hunk and every diff line.
-/// Long lines wrap rather than disappearing behind a preview truncation.
+/// A variable-height file card. The rendered detail follows `scale`: full
+/// cards show every hunk and line, condensed cards show only the changed
+/// lines, and summary cards (very large PRs) are just the file name.
 private struct ChangeCanvasCard: View {
     @ObservedObject var store: ReviewSessionStore
     let file: DiffFile
@@ -366,6 +367,50 @@ private struct ChangeCanvasCard: View {
     private static let condensedLineCap = 100
 
     var body: some View {
+        Group {
+            if scale == .summary {
+                summaryBody
+            } else {
+                detailedBody
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(borderColor, lineWidth: isSelected ? 2 : 1)
+        }
+        .shadow(color: Color.black.opacity(0.08), radius: 5, y: 2)
+        .contentShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    /// Very large PRs: the card is just the file name (plus its status letter
+    /// and viewed mark) so hundreds of cards stay instant to render.
+    private var summaryBody: some View {
+        HStack(spacing: 8) {
+            Text(file.status.letter)
+                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                .foregroundStyle(statusColor)
+                .frame(width: 18, height: 18)
+                .background(statusColor.opacity(0.13), in: RoundedRectangle(cornerRadius: 4))
+
+            Text(file.path)
+                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                .lineLimit(2)
+                .truncationMode(.middle)
+
+            Spacer(minLength: 0)
+
+            if fileIsViewed {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 14)
+    }
+
+    private var detailedBody: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
             metadata
@@ -392,7 +437,8 @@ private struct ChangeCanvasCard: View {
                     condensedPatch
                         .padding(.top, 8)
                 case .summary:
-                    summaryPlaceholder
+                    // Unreachable: summary cards use `summaryBody`.
+                    EmptyView()
                 }
             }
 
@@ -411,14 +457,6 @@ private struct ChangeCanvasCard: View {
             .padding(.top, 12)
             .padding(.bottom, 10)
         }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
-        .overlay {
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(borderColor, lineWidth: isSelected ? 2 : 1)
-        }
-        .shadow(color: Color.black.opacity(0.08), radius: 5, y: 2)
-        .contentShape(RoundedRectangle(cornerRadius: 10))
     }
 
     private var header: some View {
@@ -530,17 +568,6 @@ private struct ChangeCanvasCard: View {
                 .foregroundColor(line.kind == .added ? .green : .red)
         }
         return text
-    }
-
-    private var summaryPlaceholder: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "doc.text.magnifyingglass")
-            Text("Summary only — open card for the full diff")
-        }
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 12)
-        .padding(.top, 10)
     }
 
     private func unavailableState(_ title: String, systemImage: String) -> some View {
