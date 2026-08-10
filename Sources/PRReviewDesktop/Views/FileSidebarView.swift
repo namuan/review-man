@@ -53,7 +53,10 @@ public struct FileSidebarView: View {
                 }
             }
         }
-        .searchable(text: $store.sidebarSearch, prompt: "Filter files")
+        // Explicit sidebar placement keeps the search field in the leading
+        // file list instead of allowing macOS to move it into the window
+        // toolbar.
+        .searchable(text: $store.sidebarSearch, placement: .sidebar, prompt: "Filter files")
         .navigationTitle(showCanvas ? "Canvas" : "Files")
         .accessibilityIdentifier("file-sidebar")
     }
