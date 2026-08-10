@@ -195,6 +195,15 @@ public struct ChangeCanvasView: View {
         )
         let columnWidth = (boardWidth - CGFloat(columnCount - 1) * cardGap)
             / CGFloat(columnCount)
+        // Degraded cards have a fixed height, so calculate their board height
+        // directly. SwiftUI's intrinsic-size measurement can lag after a full
+        // patch card collapses to a file-name card, leaving no vertical range
+        // for the trackpad to scroll.
+        let rowsInTallestColumn = Int(ceil(Double(files.count) / Double(columnCount)))
+        let compactBoardHeight: CGFloat = scale == .full ? 0 :
+            CGFloat(rowsInTallestColumn) * CanvasLayoutMetrics.compactCardHeight
+            + CGFloat(max(0, rowsInTallestColumn - 1)) * cardGap
+            + CanvasLayoutMetrics.outerPadding * 2
 
         return ScrollView([.horizontal, .vertical], showsIndicators: true) {
             ZStack(alignment: .topLeading) {
@@ -215,7 +224,7 @@ public struct ChangeCanvasView: View {
                 // Force the masonry columns to report their intrinsic height
                 // instead of accepting the vertical ScrollView proposal.
                 .fixedSize(horizontal: false, vertical: true)
-                .padding(24)
+                .padding(CanvasLayoutMetrics.outerPadding)
                 .background {
                     Canvas { context, size in
                         drawGrid(in: &context, size: size)
@@ -242,7 +251,7 @@ public struct ChangeCanvasView: View {
             .frame(
                 width: max(canvasContentSize.width, boardWidth + 48) * zoom,
                 height: max(
-                    canvasContentSize.height,
+                    max(canvasContentSize.height, compactBoardHeight),
                     viewportHeight / max(zoom, 0.01)
                 ) * zoom,
                 alignment: .topLeading
@@ -346,6 +355,11 @@ public struct ChangeCanvasView: View {
     }
 }
 
+private enum CanvasLayoutMetrics {
+    static let outerPadding: CGFloat = 24
+    static let compactCardHeight: CGFloat = 48
+}
+
 private struct CanvasContentSizeKey: PreferenceKey {
     static let defaultValue = CGSize.zero
 
@@ -394,7 +408,7 @@ private struct ChangeCanvasCard: View {
 
             Text(file.path)
                 .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                .lineLimit(2)
+                .lineLimit(1)
                 .truncationMode(.middle)
 
             Spacer(minLength: 0)
@@ -405,7 +419,7 @@ private struct ChangeCanvasCard: View {
             }
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 14)
+        .frame(height: CanvasLayoutMetrics.compactCardHeight)
     }
 
     private var detailedBody: some View {
