@@ -16,7 +16,13 @@ public struct FileSidebarView: View {
     /// The first result is a non-navigating visual target for an active file
     /// filter. It helps reviewers locate the best match without opening it.
     @State private var highlightedSearchPath: String?
-    @FocusState private var isSearchFieldFocused: Bool
+
+    private enum SidebarFocusTarget: Hashable {
+        case filter
+        case fileList
+    }
+
+    @FocusState private var focusedControl: SidebarFocusTarget?
 
     public init(
         store: ReviewSessionStore,
@@ -82,6 +88,10 @@ public struct FileSidebarView: View {
                 }
             }
             }
+            .focusable()
+            .focused($focusedControl, equals: .fileList)
+            .onExitCommand { focusedControl = .filter }
+            .accessibilityIdentifier("sidebar-file-list")
         }
         .onChange(of: store.sidebarSearch) { query in
             // Search results should never be hidden inside a folder that was
@@ -117,7 +127,8 @@ public struct FileSidebarView: View {
 
             TextField("Filter files", text: $store.sidebarSearch)
                 .textFieldStyle(.plain)
-                .focused($isSearchFieldFocused)
+                .focused($focusedControl, equals: .filter)
+                .onSubmit { focusHighlightedFileList() }
                 .accessibilityIdentifier("sidebar-file-filter")
 
             if !store.sidebarSearch.isEmpty {
@@ -141,9 +152,18 @@ public struct FileSidebarView: View {
         // The sidebar can be constructed one layout pass after Cmd-F reveals
         // it, so defer setting focus until its native text field is attached.
         DispatchQueue.main.async {
-            isSearchFieldFocused = true
+            focusedControl = .filter
             focusSearch = false
         }
+    }
+
+    private func focusHighlightedFileList() {
+        guard let path = highlightedSearchPath else { return }
+        // List keyboard focus follows its selection. Select the filtered match
+        // first so Return targets that row rather than the Canvas row.
+        showCanvas = false
+        store.select(filePath: path)
+        focusedControl = .fileList
     }
 
     private func targetsThisStore(_ note: Notification) -> Bool {
