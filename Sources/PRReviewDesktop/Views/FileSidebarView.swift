@@ -13,6 +13,9 @@ public struct FileSidebarView: View {
     /// Folder paths explicitly collapsed by the reviewer. All folders start
     /// expanded so a small PR remains as scannable as the previous flat list.
     @State private var collapsedFolderPaths: Set<String> = []
+    /// The first result is a non-navigating visual target for an active file
+    /// filter. It helps reviewers locate the best match without opening it.
+    @State private var highlightedSearchPath: String?
     @FocusState private var isSearchFieldFocused: Bool
 
     public init(
@@ -72,7 +75,8 @@ public struct FileSidebarView: View {
                         SidebarFileTreeRow(
                             store: store,
                             node: node,
-                            collapsedFolderPaths: $collapsedFolderPaths
+                            collapsedFolderPaths: $collapsedFolderPaths,
+                            highlightedSearchPath: highlightedSearchPath
                         )
                     }
                 }
@@ -82,8 +86,12 @@ public struct FileSidebarView: View {
         .onChange(of: store.sidebarSearch) { query in
             // Search results should never be hidden inside a folder that was
             // previously collapsed.
-            if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedQuery.isEmpty {
                 collapsedFolderPaths.removeAll()
+                highlightedSearchPath = store.filteredSidebarItems.first?.path
+            } else {
+                highlightedSearchPath = nil
             }
         }
         .onChange(of: focusSearch) { shouldFocus in
@@ -151,19 +159,24 @@ private struct SidebarFileTreeRow: View {
     @ObservedObject var store: ReviewSessionStore
     let node: FileSidebarTreeNode
     @Binding var collapsedFolderPaths: Set<String>
+    let highlightedSearchPath: String?
 
     var body: some View {
         if let item = node.item {
+            let isBestSearchMatch = item.path == highlightedSearchPath
             SidebarFileItemRow(store: store, item: item, displayName: node.name)
                 .tag(item.path)
+                .listRowBackground(isBestSearchMatch ? Color.accentColor.opacity(0.18) : Color.clear)
                 .accessibilityIdentifier("sidebar-row-\(item.path)")
+                .accessibilityHint(isBestSearchMatch ? "Best matching file for the active filter" : "")
         } else {
             DisclosureGroup(isExpanded: folderExpansion) {
                 ForEach(node.children) { child in
                     SidebarFileTreeRow(
                         store: store,
                         node: child,
-                        collapsedFolderPaths: $collapsedFolderPaths
+                        collapsedFolderPaths: $collapsedFolderPaths,
+                        highlightedSearchPath: highlightedSearchPath
                     )
                 }
             } label: {
