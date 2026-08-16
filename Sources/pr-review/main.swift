@@ -67,6 +67,7 @@ func currentRepositoryOwnerRepo() -> String? {
 }
 
 let args = Array(CommandLine.arguments.dropFirst())
+AppLog.info("launcher", "Launcher started; argumentCount=\(args.count)")
 
 // Options handled by the launcher itself (the parser defers these to us).
 if args.contains("--version") || args.contains("-V") {
@@ -80,11 +81,13 @@ if args.contains("--help") || args.contains("-h") {
 
 switch LauncherRequestParser.parse(args) {
 case .invalid(let reason):
+    AppLog.warning("launcher", "Rejected launch request: \(reason)")
     fputs("pr-review: \(reason)\n\n", stderr)
     fputs(usage, stderr)
     exit(2)
 
 case .demo:
+    AppLog.info("launcher", "Opening demo application")
     if launchApp(arguments: ["-a", "PR Review", "--args", "--demo"]) {
         exit(0)
     }
@@ -92,6 +95,7 @@ case .demo:
     exit(1)
 
 case .open(let reference):
+    AppLog.info("launcher", "Opening PR reference \(reference)")
     // A bare number resolves against the current repository via `gh`.
     let resolved: String
     if reference.allSatisfy({ $0.isNumber }) {
@@ -110,6 +114,7 @@ case .open(let reference):
         fputs("Expected a GitHub URL (https://github.com/owner/repo/pull/N) or owner/repo#N.\n", stderr)
         exit(2)
     }
+    AppLog.info("launcher", "Handing off to application URL \(url)")
     if launchApp(arguments: [url]) {
         exit(0)
     }

@@ -176,6 +176,24 @@ open "build/PR Review.app" --args --demo --demo-files 500 --demo-lines 60000
   or an explicitly selected executable; health is checked with `gh --version`,
   `gh auth status`, and a minimal authenticated API request.
 
+## Diagnostics
+
+The app and `pr-review` launcher write asynchronous diagnostic logs to:
+
+```text
+~/Library/Logs/PR Review/PRReview.log
+```
+
+The active log rolls at 2 MiB and retains five archived files
+(`PRReview.1.log` through `PRReview.5.log`). Logs record launches, URL/window
+routing, PR loading and GitHub CLI calls, selection/render transitions,
+persistence, refreshes, and review operations. Review bodies, raw `gh`
+arguments, and token-shaped values are excluded or redacted.
+
+```sh
+tail -f "$HOME/Library/Logs/PR Review/PRReview.log"
+```
+
 ## Testing
 
 ```sh

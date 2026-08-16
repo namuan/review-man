@@ -121,16 +121,19 @@ public final class ReviewSessionStore: ObservableObject {
     // MARK: - Loading
 
     public func openDemo(scale: DemoScale = .small, files: Int? = nil, lines: Int? = nil) {
+        AppLog.info("store", "Open demo requested; scale=\(scale)")
         suppressDependencyCheck = true
         startLoad(reference: nil, demo: true, scale: scale, files: files, lines: lines)
     }
 
     /// Opens a qualified reference (full URL or `owner/repo#number`).
     public func open(reference: String) {
+        AppLog.info("store", "Open PR requested for \(reference)")
         startLoad(reference: reference, demo: false, scale: .small)
     }
 
     public func cancelLoad() {
+        AppLog.warning("store", "Cancelling load; currentReference=\(self.lastRequestedReference ?? "none")")
         // Invalidate the generation so even a cancellation-uncooperative load
         // cannot apply a stale result after the user cancelled.
         loadGeneration += 1
@@ -155,6 +158,7 @@ public final class ReviewSessionStore: ObservableObject {
 
         lastRequestedReference = demo ? "demo" : reference
         let label = demo ? "demo-\(scale)" : (reference ?? "")
+        AppLog.info("store", "Starting load generation=\(generation); reference=\(label); demo=\(demo)")
         state = .loading(reference: label)
         isBusy = true
         banner = nil
@@ -186,10 +190,13 @@ public final class ReviewSessionStore: ObservableObject {
                 self.selection = ReviewSelection(filePath: path)
                 self.state = presentation.files.isEmpty ? .empty : .loaded
                 self.isBusy = false
+                AppLog.info("store", "Load generation=\(generation) succeeded; files=\(presentation.files.count); state=\(presentation.files.isEmpty ? "empty" : "loaded")")
             } catch is CancellationError {
+                AppLog.warning("store", "Load generation=\(generation) cancelled")
                 // Superseded or explicitly cancelled: leave state as set.
             } catch {
                 guard generation == self.loadGeneration else { return }
+                AppLog.failure("store", context: "Load generation=\(generation) failed", error: error)
                 let message = (error as? LocalizedError)?.errorDescription ?? "\(error)"
                 self.banner = SessionBanner(text: message, isError: true)
                 self.state = .failed(message: message)
@@ -202,6 +209,7 @@ public final class ReviewSessionStore: ObservableObject {
 
     /// Applies a sidebar selection, retaining it if the file still exists.
     public func select(filePath: String?) {
+        let previousPath = selection.filePath
         if let path = filePath, let review,
            review.fileIndexByPath[path] != nil {
             selection.filePath = path
@@ -209,6 +217,10 @@ public final class ReviewSessionStore: ObservableObject {
             selection.filePath = review?.files.first?.path
         }
         selection.rowID = nil
+        if previousPath != selection.filePath {
+            let lineCount = selection.filePath.flatMap { path in review?.files.first(where: { $0.path == path })?.lineCount } ?? 0
+            AppLog.info("selection", "Selected file path=\(self.selection.filePath ?? "none"); previous=\(previousPath ?? "none"); diffLines=\(lineCount)")
+        }
     }
 
     public var selectedFile: DiffFile? {

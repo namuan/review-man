@@ -44,11 +44,21 @@ public struct FileSidebarView: View {
             List(selection: Binding(
             get: { showCanvas ? Self.canvasSelection : store.selection.filePath },
             set: { selection in
-                if selection == Self.canvasSelection {
-                    showCanvas = true
-                } else if let selection {
-                    showCanvas = false
-                    store.select(filePath: selection)
+                // `List` can invoke its selection binding while reconciling
+                // its own view update. Publishing state synchronously here
+                // causes SwiftUI's "Publishing changes from within view
+                // updates" loop, especially when switching Canvas → file.
+                // Defer the mutation one main-loop turn instead.
+                DispatchQueue.main.async {
+                    if selection == Self.canvasSelection {
+                        guard !showCanvas else { return }
+                        AppLog.info("selection", "Sidebar selected change canvas")
+                        showCanvas = true
+                    } else if let selection {
+                        AppLog.info("selection", "Sidebar selected file path=\(selection)")
+                        showCanvas = false
+                        store.select(filePath: selection)
+                    }
                 }
             }
         )) {
@@ -232,7 +242,7 @@ private struct SidebarFileTreeRow: View {
                     .monospacedDigit()
             }
         } icon: {
-            Image(systemName: folderExpansion.wrappedValue ? "folder.open" : "folder")
+            Image(systemName: folderExpansion.wrappedValue ? "folder.fill" : "folder")
                 .foregroundStyle(.secondary)
         }
     }

@@ -20,6 +20,8 @@ public struct ReviewSessionLoader {
     /// assembly (rows, indexes, sidebar aggregation) all run off the main
     /// actor, so even a load-test-scale demo never freezes the window.
     public func loadDemo(scale: DemoScale = .small, files: Int? = nil, lines: Int? = nil) async throws -> ReviewPresentation {
+        AppLog.info("load", "Starting demo load; scale=\(scale); requestedFiles=\(files.map(String.init) ?? "default"); requestedLines=\(lines.map(String.init) ?? "default")")
+        let startedAt = Date()
         let presentation = await Task.detached(priority: .userInitiated) {
             let demo: DemoBundle
             if let files, let lines {
@@ -37,6 +39,7 @@ public struct ReviewSessionLoader {
                 viewed: demo.viewed
             )
         }.value
+        AppLog.info("load", "Completed demo load; files=\(presentation.files.count); threads=\(presentation.threads.count); elapsedMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))")
         return presentation
     }
 
@@ -44,6 +47,8 @@ public struct ReviewSessionLoader {
     /// numbers are rejected: their resolution depends on the process current
     /// directory, which is unreliable for Finder-launched windows.
     public func load(reference: String) async throws -> ReviewPresentation {
+        AppLog.info("load", "Starting PR load for \(reference)")
+        let startedAt = Date()
         let trimmed = reference.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             throw LoadError.invalidReference
@@ -55,12 +60,15 @@ public struct ReviewSessionLoader {
 
         try await service.ensureAvailable()
         let endpoint = try await service.resolveEndpoint(from: trimmed)
+        AppLog.info("load", "Resolved load reference to \(endpoint)")
         let bundle = try await service.fetchAll(endpoint)
+        AppLog.info("load", "Fetched PR bundle for \(endpoint); files=\(bundle.files.count); threads=\(bundle.threads.count)")
 
         let drafts = try await persistence.loadDrafts(for: endpoint, headSHA: bundle.pr.headRefOid)
         let viewed = try await persistence.loadViewed(for: endpoint, headSHA: bundle.pr.headRefOid)
         // PR-scoped: hidden-reviewer state is shared across head changes.
         let hiddenReviewers = try await persistence.loadHiddenReviewers(for: endpoint)
+        AppLog.info("load", "Restored local state for \(endpoint); drafts=\(drafts.count); viewed=\(viewed.count); hiddenReviewers=\(hiddenReviewers.count)")
 
         // Draft revalidation + presentation assembly happen off the main actor;
         // only the completed immutable snapshot is handed back.
@@ -76,6 +84,7 @@ public struct ReviewSessionLoader {
                 hiddenReviewers: hiddenReviewers
             )
         }.value
+        AppLog.info("load", "Completed PR load for \(endpoint); files=\(presentation.files.count); orphanedDrafts=\(presentation.drafts.filter(\.isOrphaned).count); elapsedMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))")
         return presentation
     }
 

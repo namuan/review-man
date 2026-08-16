@@ -57,6 +57,7 @@ final class AppCoordinator: ObservableObject {
     /// counts win over the named scale).
     init() {
         let args = CommandLine.arguments
+        AppLog.info("app", "Application coordinator initialized; argumentCount=\(args.count)")
         guard args.contains("--demo") else {
             autoOpenDemoRequest = nil
             return
@@ -99,6 +100,7 @@ final class AppCoordinator: ObservableObject {
         // Prune entries whose window has closed (store deallocated).
         stores = stores.filter { $0.value.store != nil }
         if let existing = stores[resolvedKey]?.store {
+            AppLog.debug("window", "Reusing store for key=\(resolvedKey)")
             return existing
         }
         // The preference-backed resolver is shared: a user-selected executable
@@ -111,13 +113,18 @@ final class AppCoordinator: ObservableObject {
             preference: preference
         )
         stores[resolvedKey] = WeakStoreBox(store)
+        AppLog.info("window", "Created store for key=\(resolvedKey)")
         return store
     }
 
     /// Accepts `pr-review://open/<owner>/<repo>/<number>` (from the terminal
     /// launcher) and plain `https://github.com/...` URLs.
     func handle(url: URL) {
-        guard let reference = ReviewURLCoordinator.reference(for: url) else { return }
+        guard let reference = ReviewURLCoordinator.reference(for: url) else {
+            AppLog.warning("url", "Ignored unsupported incoming URL; scheme=\(url.scheme ?? "none"); host=\(url.host ?? "none")")
+            return
+        }
+        AppLog.info("url", "Accepted incoming URL; reference=\(reference)")
         // The proxy view inside each window observes this and calls
         // openWindow(value:) — creating or focusing the keyed window.
         pendingOpenReference = reference
@@ -144,6 +151,7 @@ struct OpenWindowProxy: View {
             .frame(width: 0, height: 0)
             .onReceive(coordinator.$pendingOpenReference) { reference in
                 if let reference {
+                    AppLog.info("window", "Opening or focusing window for key=\(reference)")
                     openWindow(value: reference)
                     coordinator.pendingOpenReference = nil
                 }

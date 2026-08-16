@@ -75,6 +75,12 @@ public struct DiffView: View {
             }
         }
         .accessibilityIdentifier("diff-pane")
+        .onAppear {
+            AppLog.info("render", "Opened diff pane; path=\(file.path); hunks=\(file.hunks.count); diffLines=\(file.lineCount); displayRows=\(rows.count)")
+        }
+        .onDisappear {
+            AppLog.debug("render", "Closed diff pane; path=\(file.path)")
+        }
     }
 
     /// Arrow-key navigation among commentable lines; Escape handled at the

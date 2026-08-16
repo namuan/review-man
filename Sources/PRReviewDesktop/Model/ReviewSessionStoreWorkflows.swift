@@ -107,6 +107,7 @@ extension ReviewSessionStore {
 
     /// Starts a new draft editor anchored at the given line.
     public func beginDraft(at anchor: DraftStartAnchor) {
+        AppLog.info("draft", "Opening draft editor; path=\(anchor.path); side=\(anchor.side); line=\(anchor.line)")
         draftEditor = DraftEditorState(
             draftID: nil, path: anchor.path, side: anchor.side, line: anchor.line,
             startLine: anchor.startLine, startSide: anchor.startSide
@@ -115,6 +116,7 @@ extension ReviewSessionStore {
 
     /// Opens an existing draft for editing.
     public func editDraft(_ draft: DraftComment) {
+        AppLog.info("draft", "Editing draft; path=\(draft.path); side=\(draft.side); line=\(draft.line)")
         draftEditor = DraftEditorState(
             draftID: draft.id, path: draft.path, side: draft.side, line: draft.line,
             startLine: draft.startLine, startSide: draft.startSide, text: draft.body
@@ -123,6 +125,7 @@ extension ReviewSessionStore {
 
     /// Cancels the editor without changes.
     public func cancelDraftEditor() {
+        AppLog.info("draft", "Cancelled draft editor")
         draftEditor = nil
     }
 
@@ -175,6 +178,7 @@ extension ReviewSessionStore {
     }
 
     private func applyDraftMutation(_ mutation: DraftMutation, drafts: [DraftComment]) {
+        AppLog.info("draft", "Applied draft mutation; draftCount=\(drafts.count); undoDepth=\(self.undoStack.count + 1)")
         review = review?.withDrafts(drafts)
         recordHistory(mutation)
         persistDrafts()
@@ -255,7 +259,9 @@ extension ReviewSessionStore {
             do {
                 try await self?.persistence.saveDrafts(drafts, for: endpoint, headSHA: headSHA)
                 self?.persistenceFailure = nil
+                AppLog.debug("persistence", "Saved drafts; endpoint=\(endpoint); count=\(drafts.count)")
             } catch {
+                AppLog.failure("persistence", context: "Could not save drafts for \(endpoint)", error: error)
                 self?.persistenceFailure = PersistenceFailure(operation: "drafts", message: "\(error)")
                 self?.banner = SessionBanner(text: "Could not save local drafts. Changes remain in memory.", isError: true)
             }
@@ -273,7 +279,9 @@ extension ReviewSessionStore {
             do {
                 try await self?.persistence.saveViewed(viewed, for: endpoint, headSHA: headSHA)
                 self?.persistenceFailure = nil
+                AppLog.debug("persistence", "Saved viewed marks; endpoint=\(endpoint); count=\(viewed.count)")
             } catch {
+                AppLog.failure("persistence", context: "Could not save viewed marks for \(endpoint)", error: error)
                 self?.persistenceFailure = PersistenceFailure(operation: "viewed", message: "\(error)")
                 self?.banner = SessionBanner(text: "Could not save local viewed marks. Changes remain in memory.", isError: true)
             }
@@ -290,7 +298,9 @@ extension ReviewSessionStore {
             do {
                 try await self?.persistence.saveHiddenReviewers(hidden, for: endpoint)
                 self?.persistenceFailure = nil
+                AppLog.debug("persistence", "Saved hidden reviewers; endpoint=\(endpoint); count=\(hidden.count)")
             } catch {
+                AppLog.failure("persistence", context: "Could not save hidden reviewers for \(endpoint)", error: error)
                 self?.persistenceFailure = PersistenceFailure(operation: "hidden reviewers", message: "\(error)")
                 self?.banner = SessionBanner(text: "Could not save hidden reviewer state. Changes remain in memory.", isError: true)
             }
@@ -341,6 +351,7 @@ public extension ReviewSessionStore {
     /// that just became invisible: the row selection and open reply editors.
     private func applyHiddenReviewers(_ hidden: Set<String>) {
         guard let review else { return }
+        AppLog.info("review", "Updated hidden-reviewer filter; count=\(hidden.count)")
         self.review = review.withHiddenReviewers(hidden)
         if case .thread(let threadID)? = selection.rowID,
            let thread = self.review?.threadByID[threadID],
@@ -368,6 +379,7 @@ public extension ReviewSessionStore {
             viewed.insert(filePath)
         }
         review = review?.withViewed(viewed)
+        AppLog.info("review", "Toggled viewed mark; path=\(filePath); isViewed=\(viewed.contains(filePath))")
         persistViewed()
     }
 
@@ -387,6 +399,7 @@ public extension ReviewSessionStore {
         var updated = thread
         updated.isResolved = newState
         self.review = review.withThread(updated)
+        AppLog.info("review", "Optimistically set thread resolved=\(newState); threadID=\(threadID)")
 
         guard let endpoint = review.endpoint, !demoSession else {
             return
@@ -398,7 +411,9 @@ public extension ReviewSessionStore {
             do {
                 try await operations.setResolved(endpoint: endpoint, threadID: threadID, resolved: newState)
                 self?.resolveHandlingCount += 1
+                AppLog.info("review", "Thread resolution synced; threadID=\(threadID); resolved=\(newState)")
             } catch {
+                AppLog.failure("review", context: "Thread resolution failed; threadID=\(threadID)", error: error)
                 guard let self else { return }
                 self.resolveHandlingCount += 1
                 guard generation == self.resolveGenerations[threadID] else { return }
@@ -417,6 +432,7 @@ public extension ReviewSessionStore {
     func beginReply(threadID: String) {
         guard let thread = session.threads.first(where: { $0.id == threadID }),
               let commentID = thread.rootCommentID else { return }
+        AppLog.info("review", "Opening reply editor; threadID=\(threadID); commentID=\(commentID)")
         replyEditors[threadID] = ReplyEditorState(threadID: threadID, commentID: commentID)
     }
 
@@ -448,6 +464,7 @@ public extension ReviewSessionStore {
         }
         guard let endpoint = session.endpoint else { return }
         let operations = ReviewOperations(service: service, persistence: persistence)
+        AppLog.info("review", "Sending reply; endpoint=\(endpoint); threadID=\(threadID); commentID=\(editor.commentID)")
 
         replyEditors[threadID] = ReplyEditorState(threadID: editor.threadID, commentID: editor.commentID, body: editor.body, retryFailed: true)
         editor.retryFailed = true
@@ -455,9 +472,11 @@ public extension ReviewSessionStore {
         Task { [weak self] in
             do {
                 try await operations.reply(endpoint: endpoint, commentID: editor.commentID, body: body)
+                AppLog.info("review", "Reply sent; threadID=\(threadID)")
                 self?.replyEditors[threadID] = nil
                 self?.refresh()
             } catch {
+                AppLog.failure("review", context: "Reply failed; threadID=\(threadID)", error: error)
                 guard let self else { return }
                 self.replyEditors[threadID] = ReplyEditorState(
                     threadID: editor.threadID, commentID: editor.commentID,
@@ -471,6 +490,7 @@ public extension ReviewSessionStore {
     // MARK: - Submit
 
     func beginSubmit() {
+        AppLog.info("review", "Opening submit-review sheet")
         submitEvent = .comment
         submitBody = ""
         submitValidationMessage = nil
@@ -500,6 +520,7 @@ public extension ReviewSessionStore {
         }
         submitValidationMessage = nil
         submitState = .submitting
+        AppLog.info("review", "Submitting review; event=\(event.apiValue); drafts=\(submittable.count); summaryCharacters=\(body.count)")
 
         if demoSession {
             review = review?.withDrafts(review?.drafts.filter { $0.isOrphaned } ?? [])
@@ -526,12 +547,15 @@ public extension ReviewSessionStore {
                 self.submitState = .hidden
                 self.banner = SessionBanner(text: "Review submitted.")
                 self.persistDrafts()
+                AppLog.info("review", "Review submitted; draftsSent=\(submitted.count)")
                 self.refresh()
             } catch is CancellationError {
+                AppLog.warning("review", "Review submission was cancelled")
                 guard let self else { return }
                 // Cancellation after dispatch: the remote result is uncertain.
                 self.submitState = .uncertain(message: "Submission was interrupted. Verify on GitHub before retrying.")
             } catch {
+                AppLog.failure("review", context: "Review submission failed", error: error)
                 guard let self else { return }
                 self.submitState = .failed(message: "Submit failed: \(error)")
             }
@@ -553,12 +577,14 @@ public extension ReviewSessionStore {
 
         let snapshot = session
         let anchorPath = selection.filePath
+        AppLog.info("refresh", "Starting refresh generation=\(generation); endpoint=\(endpoint); selectedPath=\(anchorPath ?? "none")")
         let operations = ReviewOperations(service: service, persistence: persistence)
         isBusy = true
         let task = Task { [weak self] in
             do {
                 guard let self else { return }
                 let bundle = try await self.service.fetchAll(endpoint)
+                AppLog.info("refresh", "Fetched refresh bundle; files=\(bundle.files.count); threads=\(bundle.threads.count)")
                 let result = try await operations.migrate(
                     bundle: bundle, endpoint: endpoint,
                     current: ReviewLocalState(
@@ -592,9 +618,12 @@ public extension ReviewSessionStore {
                 self.selection = ReviewSelection(filePath: kept ?? files.first?.path)
                 self.banner = SessionBanner(text: result.message)
                 self.isBusy = false
+                AppLog.info("refresh", "Completed refresh generation=\(generation); selectedPath=\(self.selection.filePath ?? "none"); message=\(result.message)")
             } catch is CancellationError {
+                AppLog.warning("refresh", "Refresh generation=\(generation) cancelled")
                 // superseded or cancelled
             } catch {
+                AppLog.failure("refresh", context: "Refresh generation=\(generation) failed", error: error)
                 guard let self, generation == self.refreshGeneration else { return }
                 self.banner = SessionBanner(text: "Refresh failed: \(error)", isError: true)
                 self.isBusy = false
@@ -608,6 +637,7 @@ public extension ReviewSessionStore {
     /// Copies the exact `path:line content` text for a line row.
     func copyLineToClipboard(file: DiffFile, hunkIndex: Int, lineIndex: Int) -> Bool {
         guard let line = file.line(at: hunkIndex, lineIndex) else { return false }
+        AppLog.info("clipboard", "Copying diff line; path=\(file.path); line=\(line.newLine ?? line.oldLine ?? 0)")
         let text = ReviewUtilities.clipboardText(path: file.path, line: line)
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
@@ -623,6 +653,7 @@ public extension ReviewSessionStore {
             banner = SessionBanner(text: demoSession ? "Demo mode — no PR URL to open." : "No PR URL available.", isError: true)
             return
         }
+        AppLog.info("browser", "Opening PR URL in browser")
         NSWorkspace.shared.open(url!)
     }
 }
@@ -829,11 +860,13 @@ public extension ReviewSessionStore {
         let resolver = GitHubExecutableResolver(overrideURL: preference.selectedExecutableURL)
         let runner = dependencyRunner ?? SystemCommandRunner(resolver: resolver)
         let checker = GitHubDependencyChecker(runner: runner, resolver: resolver)
+        AppLog.info("dependency", "Starting GitHub CLI health check generation=\(generation)")
         Task { [weak self] in
             let status = await checker.check()
             guard let self, generation == self.dependencyGeneration else { return }
             self.isCheckingDependency = false
             self._dependencyStatus = status
+            AppLog.info("dependency", "Completed GitHub CLI health check generation=\(generation); state=\(status.state); executable=\(status.executableURL?.path ?? "none")")
         }
     }
 

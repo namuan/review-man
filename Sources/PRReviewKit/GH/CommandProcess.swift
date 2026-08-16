@@ -176,6 +176,7 @@ final class CommandProcess {
         timeout: TimeInterval,
         directory: URL
     ) async throws -> GH.Result {
+        AppLog.debug("gh", "Starting \(label(for: arguments)); timeout=\(Int(timeout))s")
         let coordinator = Coordinator(
             executableURL: executableURL,
             arguments: arguments,
@@ -237,6 +238,7 @@ final class CommandProcess {
         /// `start()` observes `cancelRequested` and terminates immediately
         /// after launching.
         func cancel() {
+            AppLog.warning("gh", "Cancellation requested for \(CommandProcess.label(for: self.arguments))")
             lock.lock()
             cancelRequested = true
             let proc = process
@@ -296,6 +298,7 @@ final class CommandProcess {
                 return
             }
             timedOut = true
+            AppLog.warning("gh", "Timed out \(CommandProcess.label(for: self.arguments)) after \(Int(self.timeout))s")
             let proc = process
             lock.unlock()
             proc?.terminate()
@@ -340,6 +343,12 @@ final class CommandProcess {
                 outcome = .success(GH.Result(data: data, stderr: errText))
             }
             ended = true
+            switch outcome {
+            case .success(let result):
+                AppLog.debug("gh", "Completed \(CommandProcess.label(for: self.arguments)); status=\(status); stdoutBytes=\(result.data.count); stderrBytes=\(result.stderr.utf8.count)")
+            case .failure(let error):
+                AppLog.failure("gh", context: "Failed \(CommandProcess.label(for: self.arguments)); status=\(status)", error: error)
+            }
             let continuation = self.continuation
             self.continuation = nil
             lock.unlock()
@@ -365,6 +374,12 @@ final class CommandProcess {
             self.outURL = nil
             self.errURL = nil
             ended = true
+            switch outcome {
+            case .success:
+                AppLog.debug("gh", "Completed setup for \(CommandProcess.label(for: self.arguments))")
+            case .failure(let error):
+                AppLog.failure("gh", context: "Could not start \(CommandProcess.label(for: self.arguments))", error: error)
+            }
             let continuation = self.continuation
             self.continuation = nil
             lock.unlock()

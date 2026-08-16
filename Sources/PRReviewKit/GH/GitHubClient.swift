@@ -100,11 +100,15 @@ public final class GitHubClient: GitHubServing {
     // MARK: - Command helpers
 
     public func ensureAvailable() async throws {
+        AppLog.info("github", "Checking GitHub CLI availability")
         do {
             _ = try await commandRunner.run(["--version"], timeout: 30)
+            AppLog.info("github", "GitHub CLI is available")
         } catch is CancellationError {
+            AppLog.warning("github", "GitHub CLI availability check was cancelled")
             throw CancellationError()
         } catch {
+            AppLog.failure("github", context: "GitHub CLI availability check failed", error: error)
             // A broken or missing `gh` maps to the same actionable message as
             // a resolver miss.
             throw GitHubError.ghUnavailable(
@@ -160,13 +164,16 @@ public final class GitHubClient: GitHubServing {
     /// Accepts: full PR URL, `owner/repo#number`, or a bare number (resolved
     /// against the repository of the current working directory).
     public func resolveEndpoint(from arg: String) async throws -> PREndpoint {
+        AppLog.info("github", "Resolving pull request reference \(arg)")
         var trimmed = arg.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.hasSuffix("/") { trimmed.removeLast() }
         if trimmed.hasPrefix("https://github.com/") || trimmed.hasPrefix("http://github.com/") {
             let path = trimmed.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
             // ["https:", "github.com", owner, repo, "pull", N]
             if path.count >= 5, path[path.count - 2] == "pull", let n = Int(path[path.count - 1]) {
-                return PREndpoint(owner: path[path.count - 4], repo: path[path.count - 3], number: n)
+                let endpoint = PREndpoint(owner: path[path.count - 4], repo: path[path.count - 3], number: n)
+                AppLog.info("github", "Resolved URL to \(endpoint)")
+                return endpoint
             }
             throw GitHubError.parse("Not a GitHub PR URL: \(arg)")
         }
@@ -180,7 +187,9 @@ public final class GitHubClient: GitHubServing {
             guard repoParts.count == 2 else {
                 throw GitHubError.parse("Expected owner/repo#number: \(arg)")
             }
-            return PREndpoint(owner: String(repoParts[0]), repo: String(repoParts[1]), number: n)
+            let endpoint = PREndpoint(owner: String(repoParts[0]), repo: String(repoParts[1]), number: n)
+            AppLog.info("github", "Resolved shorthand to \(endpoint)")
+            return endpoint
         }
         // bare number: resolve repo from cwd
         if let n = Int(trimmed) {
@@ -194,7 +203,9 @@ public final class GitHubClient: GitHubServing {
             guard parts.count == 2 else {
                 throw GitHubError.parse("Could not determine the current repository; use owner/repo#number or a full URL.")
             }
-            return PREndpoint(owner: String(parts[0]), repo: String(parts[1]), number: n)
+            let endpoint = PREndpoint(owner: String(parts[0]), repo: String(parts[1]), number: n)
+            AppLog.info("github", "Resolved current-repository reference to \(endpoint)")
+            return endpoint
         }
         throw GitHubError.parse("Could not understand PR reference: \(arg)")
     }
@@ -220,12 +231,13 @@ public final class GitHubClient: GitHubServing {
     }
 
     public func fetchPRInfo(_ ep: PREndpoint) async throws -> PRInfo {
+        AppLog.info("github", "Fetching PR metadata for \(ep)")
         let fields = "number,title,body,state,isDraft,headRefOid,headRefName,baseRefName,"
             + "additions,deletions,changedFiles,reviewDecision,url,author"
         let dto: PRInfoDTO = try await runJSON([
             "pr", "view", "--repo", "\(ep.owner)/\(ep.repo)", String(ep.number), "--json", fields,
         ])
-        return PRInfo(
+        let info = PRInfo(
             number: dto.number,
             title: dto.title,
             body: dto.body,
@@ -241,12 +253,15 @@ public final class GitHubClient: GitHubServing {
             reviewDecision: dto.reviewDecision,
             url: dto.url
         )
+        AppLog.info("github", "Fetched metadata for \(ep); state=\(info.state); files=\(info.changedFiles); head=\(info.headRefOid.prefix(12))")
+        return info
     }
 
     /// Fetches the full unified diff; falls back to the per-file `files`
     /// endpoint when the raw diff fails (huge PRs, 406s, etc). Cancellation is
     /// never swallowed by the fallback.
     public func fetchDiff(_ ep: PREndpoint) async throws -> [DiffFile] {
+        AppLog.info("github", "Fetching diff for \(ep)")
         do {
             let r = try await commandRunner.run([
                 "api", "repos/\(ep.owner)/\(ep.repo)/pulls/\(ep.number)",
@@ -255,12 +270,15 @@ public final class GitHubClient: GitHubServing {
             let text = String(data: r.data, encoding: .utf8) ?? ""
             let files = DiffParser.parse(text)
             if !files.isEmpty || text.isEmpty {
+                AppLog.info("github", "Fetched raw diff for \(ep); bytes=\(r.data.count); files=\(files.count)")
                 return files
             }
+            AppLog.warning("github", "Raw diff for \(ep) was non-empty but could not be parsed; using file fallback")
         } catch is CancellationError {
+            AppLog.warning("github", "Diff fetch cancelled for \(ep)")
             throw CancellationError()
         } catch {
-            // fall through to the files endpoint
+            AppLog.failure("github", context: "Raw diff fetch failed for \(ep); using file fallback", error: error)
         }
         return try await fetchFilesFallback(ep)
     }
@@ -276,10 +294,11 @@ public final class GitHubClient: GitHubServing {
     }
 
     private func fetchFilesFallback(_ ep: PREndpoint) async throws -> [DiffFile] {
+        AppLog.info("github", "Fetching per-file diff fallback for \(ep)")
         let dtos: [PRFileDTO] = try await runJSON([
             "api", "repos/\(ep.owner)/\(ep.repo)/pulls/\(ep.number)/files", "--paginate",
         ])
-        return dtos.map { dto in
+        let files = dtos.map { dto in
             var file = DiffFile()
             switch dto.status {
             case "added": file.status = .added
@@ -307,6 +326,8 @@ public final class GitHubClient: GitHubServing {
             file.tooLarge = true
             return file
         }
+        AppLog.info("github", "Fetched per-file diff fallback for \(ep); files=\(files.count); unavailable=\(files.filter(\.tooLarge).count)")
+        return files
     }
 
     // MARK: - Review threads (GraphQL, cursor-paginated, variable-driven)
@@ -344,6 +365,7 @@ public final class GitHubClient: GitHubServing {
     """
 
     public func fetchThreads(_ ep: PREndpoint) async throws -> [PRThread] {
+        AppLog.info("github", "Fetching review threads for \(ep)")
         var threads: [PRThread] = []
         var after: String?
         repeat {
@@ -389,6 +411,7 @@ public final class GitHubClient: GitHubServing {
             threads.append(contentsOf: ordered.compactMap { $0 })
             after = conn.pageInfo.hasNextPage ? conn.pageInfo.endCursor : nil
         } while after != nil
+        AppLog.info("github", "Fetched review threads for \(ep); threads=\(threads.count)")
         return threads
     }
 
@@ -423,13 +446,16 @@ public final class GitHubClient: GitHubServing {
     }
 
     public func fetchAll(_ ep: PREndpoint) async throws -> FetchBundle {
+        AppLog.info("github", "Starting concurrent PR fetch for \(ep)")
         // The three top-level fetches are independent; running them
         // concurrently hides subprocess startup and network latency behind each
         // other. Cancellation propagates to all three via `async let`.
         async let pr = fetchPRInfo(ep)
         async let files = fetchDiff(ep)
         async let threads = fetchThreads(ep)
-        return try await FetchBundle(pr: pr, files: files, threads: threads)
+        let bundle = try await FetchBundle(pr: pr, files: files, threads: threads)
+        AppLog.info("github", "Completed concurrent PR fetch for \(ep); files=\(bundle.files.count); threads=\(bundle.threads.count)")
+        return bundle
     }
 
     // MARK: - Writes
@@ -441,6 +467,7 @@ public final class GitHubClient: GitHubServing {
         event: String,
         drafts: [DraftComment]
     ) async throws {
+        AppLog.info("review", "Submitting \(event) review for \(ep); drafts=\(drafts.count); commit=\(commitID.prefix(12))")
         let payload = PayloadBuilder.reviewPayload(
             commitID: commitID, body: body, event: event, drafts: drafts
         )
@@ -451,9 +478,11 @@ public final class GitHubClient: GitHubServing {
             "repos/\(ep.owner)/\(ep.repo)/pulls/\(ep.number)/reviews",
             "--input", file,
         ], timeout: GH.defaultTimeout)
+        AppLog.info("review", "Submitted review for \(ep)")
     }
 
     public func replyToThread(_ ep: PREndpoint, commentID: Int, body: String) async throws {
+        AppLog.info("review", "Posting reply for \(ep); commentID=\(commentID)")
         struct Reply: Encodable { let body: String }
         let file = try PayloadBuilder.writeJSONToTemp(Reply(body: body), in: payloadDirectory)
         defer { try? FileManager.default.removeItem(atPath: file) }
@@ -462,9 +491,11 @@ public final class GitHubClient: GitHubServing {
             "repos/\(ep.owner)/\(ep.repo)/pulls/\(ep.number)/comments/\(commentID)/replies",
             "--input", file,
         ], timeout: GH.defaultTimeout)
+        AppLog.info("review", "Posted reply for \(ep); commentID=\(commentID)")
     }
 
     public func resolveThread(_ ep: PREndpoint, threadID: String, resolved: Bool) async throws {
+        AppLog.info("review", "Setting thread resolved=\(resolved) for \(ep); threadID=\(threadID)")
         // ResolveReviewThreadInput/UnresolveReviewThreadInput contain only
         // clientMutationId and threadId (verified against the GitHub schema).
         let mutation = resolved
@@ -472,5 +503,6 @@ public final class GitHubClient: GitHubServing {
             : "mutation($id: ID!) { unresolveReviewThread(input: { threadId: $id }) { thread { id isResolved } } }"
         struct EmptyData: Decodable {}
         _ = try await runGraphQL(query: mutation, variables: ["id": .string(threadID)]) as EmptyData
+        AppLog.info("review", "Updated thread resolution for \(ep); threadID=\(threadID); resolved=\(resolved)")
     }
 }
