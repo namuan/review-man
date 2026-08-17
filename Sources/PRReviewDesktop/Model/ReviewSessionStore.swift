@@ -61,6 +61,9 @@ public final class ReviewSessionStore: ObservableObject {
     /// Rendered diff lines, cached so file switches in large PRs don't
     /// re-tokenize / re-attribute the viewport. Bounded LRU, per window.
     public let diffLineCache = DiffLineCache()
+    /// Phase 1 baseline monitor for file-selection and editor presentation
+    /// latency. It owns no review state and can remain enabled during profiling.
+    public let performance = ReviewPerformanceMonitor()
 
     private var loadGeneration = 0
     private var loadTask: Task<Void, Never>?
@@ -219,6 +222,9 @@ public final class ReviewSessionStore: ObservableObject {
         selection.rowID = nil
         if previousPath != selection.filePath {
             let lineCount = selection.filePath.flatMap { path in review?.files.first(where: { $0.path == path })?.lineCount } ?? 0
+            if let path = selection.filePath {
+                performance.beginFileSelection(path: path, lineCount: lineCount)
+            }
             AppLog.info("selection", "Selected file path=\(self.selection.filePath ?? "none"); previous=\(previousPath ?? "none"); diffLines=\(lineCount)")
         }
     }

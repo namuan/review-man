@@ -12,16 +12,34 @@ final class PRReviewAppUITests: XCTestCase {
 
     private func launchDemo() -> XCUIApplication {
         let app = XCUIApplication()
+        app.launchArguments = ["--demo", "--swiftui-diff"]
+        app.launch()
+        return app
+    }
+
+    private func launchDefaultDemo() -> XCUIApplication {
+        let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launch()
         return app
     }
 
     func testOpenDemoViaLaunchArgument() {
-        let app = launchDemo()
+        let app = launchDefaultDemo()
         XCTAssertTrue(app.descendants(matching: .any)["pr-header"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.descendants(matching: .any)["file-sidebar"].exists)
         XCTAssertTrue(app.descendants(matching: .any)["change-canvas-pane"].exists)
+    }
+
+    func testDefaultRendererUsesAppKitSurface() {
+        let app = launchDefaultDemo()
+        XCTAssertTrue(app.descendants(matching: .any)["pr-header"].waitForExistence(timeout: 10))
+        let firstCard = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH 'canvas-file-'"))
+            .firstMatch
+        XCTAssertTrue(firstCard.waitForExistence(timeout: 10))
+        firstCard.click()
+        XCTAssertTrue(app.descendants(matching: .any)["diff-pane-appkit-surface"].waitForExistence(timeout: 10))
     }
 
     func testOpenDemoViaWelcomeButton() {

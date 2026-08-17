@@ -23,21 +23,30 @@ public struct ReviewSessionLoader {
         AppLog.info("load", "Starting demo load; scale=\(scale); requestedFiles=\(files.map(String.init) ?? "default"); requestedLines=\(lines.map(String.init) ?? "default")")
         let startedAt = Date()
         let presentation = await Task.detached(priority: .userInitiated) {
-            let demo: DemoBundle
-            if let files, let lines {
-                demo = DemoData.makeDemoBundle(files: files, lines: lines)
-            } else {
-                demo = DemoData.makeDemoBundle(scale: scale)
+            let demo: DemoBundle = PerformanceLog.measure(
+                name: "DemoFixtureBuild",
+                label: "demo-fixture scale=\(scale)"
+            ) {
+                if let files, let lines {
+                    return DemoData.makeDemoBundle(files: files, lines: lines)
+                }
+                return DemoData.makeDemoBundle(scale: scale)
             }
             let drafts = DraftAnchorValidator.revalidated(demo.drafts, against: demo.files)
-            return ReviewPresentation(
-                endpoint: demo.endpoint,
-                pr: demo.pr,
-                files: demo.files,
-                threads: demo.threads,
-                drafts: drafts,
-                viewed: demo.viewed
-            )
+            return PerformanceLog.measure(
+                name: "PresentationBuild",
+                label: "presentation-build files=\(demo.files.count) lines=\(demo.files.reduce(0) { $0 + $1.lineCount })",
+                logDuration: true
+            ) {
+                ReviewPresentation(
+                    endpoint: demo.endpoint,
+                    pr: demo.pr,
+                    files: demo.files,
+                    threads: demo.threads,
+                    drafts: drafts,
+                    viewed: demo.viewed
+                )
+            }
         }.value
         AppLog.info("load", "Completed demo load; files=\(presentation.files.count); threads=\(presentation.threads.count); elapsedMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))")
         return presentation
@@ -74,15 +83,21 @@ public struct ReviewSessionLoader {
         // only the completed immutable snapshot is handed back.
         let presentation = await Task.detached(priority: .userInitiated) {
             let validated = DraftAnchorValidator.revalidated(drafts, against: bundle.files)
-            return ReviewPresentation(
-                endpoint: endpoint,
-                pr: bundle.pr,
-                files: bundle.files,
-                threads: bundle.threads,
-                drafts: validated,
-                viewed: viewed,
-                hiddenReviewers: hiddenReviewers
-            )
+            return PerformanceLog.measure(
+                name: "PresentationBuild",
+                label: "presentation-build files=\(bundle.files.count) lines=\(bundle.files.reduce(0) { $0 + $1.lineCount })",
+                logDuration: true
+            ) {
+                ReviewPresentation(
+                    endpoint: endpoint,
+                    pr: bundle.pr,
+                    files: bundle.files,
+                    threads: bundle.threads,
+                    drafts: validated,
+                    viewed: viewed,
+                    hiddenReviewers: hiddenReviewers
+                )
+            }
         }.value
         AppLog.info("load", "Completed PR load for \(endpoint); files=\(presentation.files.count); orphanedDrafts=\(presentation.drafts.filter(\.isOrphaned).count); elapsedMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))")
         return presentation

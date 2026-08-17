@@ -30,7 +30,10 @@ public struct DraftEditorView: View {
                 .frame(minHeight: 60, maxHeight: 140)
                 .focused($focused)
                 .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.gray.opacity(0.3)))
-                .onAppear { focused = true }
+                .onAppear {
+                    focused = true
+                    store.performance.draftEditorDidAppear(path: editor.path, line: editor.line)
+                }
                 .accessibilityIdentifier("draft-editor")
             HStack(spacing: 8) {
                 Button("Save") {

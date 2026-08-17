@@ -23,7 +23,7 @@ APP_NAME := PR Review.app
 APP := build/$(APP_NAME)
 LOCAL_APPS := $(HOME)/Applications
 
-.PHONY: all app run demo test bench smoke launcher local-install clean
+.PHONY: all app run demo swiftui appkit-surface test bench baseline smoke launcher local-install clean
 
 all: app
 
@@ -38,6 +38,14 @@ run: app
 demo: app
 	open "$(APP)" --args --demo
 
+# Explicit SwiftUI fallback for comparison and recovery testing.
+swiftui: app
+	open -n "$(APP)" --args --demo --swiftui-diff
+
+# AppKit renderer comparison target using one 50k-line file.
+appkit-surface: app
+	open -n "$(APP)" --args --demo --demo-files 1 --demo-lines 50000 --appkit-diff
+
 test:
 	swift test
 
@@ -46,6 +54,19 @@ test:
 bench:
 	swift build -c release --product PRReviewBench
 	.build/release/PRReviewBench --fixture 50000 --files 250 --runs 3
+
+# Phase 1 baseline across the three planned line-count tiers. Reports are
+# written under build/perf so they can be compared after renderer changes.
+baseline:
+	swift build -c release --product PRReviewBench
+	mkdir -p build/perf
+	@for spec in "10000 50" "50000 250" "100000 500"; do \
+		set -- $$spec; \
+		lines=$$1; files=$$2; \
+		.build/release/PRReviewBench --fixture $$lines --files $$files --runs 3 \
+			--format json --json-out build/perf/baseline-$$lines-$$files.json \
+			> build/perf/baseline-$$lines-$$files.txt; \
+		done
 
 # Headless demo-scale timing without opening a window (debug build).
 smoke:
