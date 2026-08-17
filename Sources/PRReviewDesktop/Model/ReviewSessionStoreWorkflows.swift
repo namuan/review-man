@@ -107,6 +107,7 @@ extension ReviewSessionStore {
 
     /// Starts a new draft editor anchored at the given line.
     public func beginDraft(at anchor: DraftStartAnchor) {
+        performance.beginDraftEditor(path: anchor.path, line: anchor.line)
         AppLog.info("draft", "Opening draft editor; path=\(anchor.path); side=\(anchor.side); line=\(anchor.line)")
         draftEditor = DraftEditorState(
             draftID: nil, path: anchor.path, side: anchor.side, line: anchor.line,
@@ -116,6 +117,7 @@ extension ReviewSessionStore {
 
     /// Opens an existing draft for editing.
     public func editDraft(_ draft: DraftComment) {
+        performance.beginDraftEditor(path: draft.path, line: draft.line)
         AppLog.info("draft", "Editing draft; path=\(draft.path); side=\(draft.side); line=\(draft.line)")
         draftEditor = DraftEditorState(
             draftID: draft.id, path: draft.path, side: draft.side, line: draft.line,

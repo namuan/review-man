@@ -5,6 +5,15 @@ import Foundation
 public enum DiffParser {
 
     public static func parse(_ text: String) -> [DiffFile] {
+        PerformanceLog.measure(
+            name: "DiffParse",
+            label: "diff-parse bytes=\(text.utf8.count)"
+        ) {
+            parseImpl(text)
+        }
+    }
+
+    private static func parseImpl(_ text: String) -> [DiffFile] {
         var files: [DiffFile] = []
         var current: DiffFile?
         var hunk: DiffHunk?

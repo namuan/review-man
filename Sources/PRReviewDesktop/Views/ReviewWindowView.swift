@@ -63,6 +63,13 @@ public struct ReviewWindowView: View {
             }
             if store.requestFocus != .none { store.requestFocus = .none }
         }
+        .onChange(of: showCanvas) { showingCanvas in
+            guard !showingCanvas, let file = store.selectedFile else { return }
+            // Start the render interval when the focused diff actually becomes
+            // the visible mode. This avoids counting time spent browsing the
+            // canvas after a file was selected there.
+            store.performance.beginFileSelection(path: file.path, lineCount: file.lineCount)
+        }
         .sheet(isPresented: $showOpenSheet) {
             VStack(spacing: 16) {
                 Text("Open Pull Request")

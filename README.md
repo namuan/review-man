@@ -59,7 +59,12 @@ make app     # debug build at build/PR Review.app
 make run     # build + launch
 make demo    # build + launch the offline load-test demo (250 files / 40k lines)
 make app CONFIG=release   # release build
+make swiftui               # explicit SwiftUI fallback demo
 ```
+
+The AppKit virtualized surface is the default renderer for eligible textual
+files. Use `--swiftui-diff` (or `make swiftui`) to compare with the original
+SwiftUI renderer.
 
 `make app` runs `swift build` and `scripts/build-app`, which assembles the
 `.app` bundle, Info.plist, and `.icns` icon. It does not invoke `xcodebuild` or

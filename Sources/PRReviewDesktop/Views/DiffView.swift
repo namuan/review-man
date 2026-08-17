@@ -40,7 +40,15 @@ public struct DiffView: View {
             )
             .accessibilityIdentifier("empty-file-state")
         } else {
-            diffScroll
+            switch AppKitDiffSpike.mode {
+            case .disabled:
+                diffScroll
+            case .surface:
+                AppKitDiffSurfaceView(store: store, file: file)
+                    .accessibilityIdentifier("diff-pane-appkit-surface")
+                    .onAppear { appKitDiffDidAppear() }
+                    .onDisappear { store.performance.diffDidDisappear(path: file.path) }
+            }
         }
     }
 
@@ -70,17 +78,33 @@ public struct DiffView: View {
                     }
                 }
                 .onMoveCommand { direction in
+                    store.performance.recordNavigation()
                     handleMoveCommand(direction, proxy: proxy)
                 }
             }
         }
         .accessibilityIdentifier("diff-pane")
         .onAppear {
-            AppLog.info("render", "Opened diff pane; path=\(file.path); hunks=\(file.hunks.count); diffLines=\(file.lineCount); displayRows=\(rows.count)")
+            store.performance.diffDidAppear(
+                path: file.path,
+                lineCount: file.lineCount,
+                rowCount: rows.count,
+                hunkCount: file.hunks.count
+            )
         }
         .onDisappear {
+            store.performance.diffDidDisappear(path: file.path)
             AppLog.debug("render", "Closed diff pane; path=\(file.path)")
         }
+    }
+
+    private func appKitDiffDidAppear() {
+        store.performance.diffDidAppear(
+            path: file.path,
+            lineCount: file.lineCount,
+            rowCount: displayRows().count,
+            hunkCount: file.hunks.count
+        )
     }
 
     /// Arrow-key navigation among commentable lines; Escape handled at the

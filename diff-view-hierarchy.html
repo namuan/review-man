@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DiffView hierarchy</title>
+  <style>
+    :root {
+      --bg: #ffffff; --text: #202124; --muted: #686868;
+      --surface: #f7f7f5; --border: #c8c8c3;
+      --purple-fill: #eeedfe; --purple-stroke: #534ab7;
+      --teal-fill: #e1f5ee; --teal-stroke: #0f6e56;
+      --gray-fill: #f1efe8; --gray-stroke: #5f5e5a;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #1e1e1c; --text: #f1f0eb; --muted: #b4b2a9;
+        --surface: #292926; --border: #5f5e5a;
+        --purple-fill: #3c3489; --purple-stroke: #afa9ec;
+        --teal-fill: #085041; --teal-stroke: #9fe1cb;
+        --gray-fill: #444441; --gray-stroke: #d3d1c7;
+      }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 24px; background: var(--bg); color: var(--text); font: 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    main { max-width: 760px; margin: 0 auto; }
+    h1 { margin: 0 0 6px; font-size: 22px; font-weight: 600; }
+    p { margin: 0 0 18px; color: var(--muted); }
+    .diagram { width: 100%; overflow-x: auto; border: 1px solid var(--border); border-radius: 12px; background: var(--bg); }
+    svg { display: block; width: 100%; min-width: 680px; height: auto; }
+    .t { font: 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: var(--text); }
+    .ts { font: 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: var(--muted); }
+    .th { font: 500 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: var(--text); }
+    .box { fill: var(--surface); stroke: var(--border); stroke-width: .5; }
+    .arr { fill: none; stroke: var(--border); stroke-width: 1; marker-end: url(#arrow); }
+    .dash { fill: none; stroke: var(--border); stroke-width: 1; stroke-dasharray: 4 4; marker-end: url(#arrow); }
+    .c-purple rect { fill: var(--purple-fill); stroke: var(--purple-stroke); stroke-width: .8; }
+    .c-teal rect { fill: var(--teal-fill); stroke: var(--teal-stroke); stroke-width: .8; }
+    .c-gray rect { fill: var(--gray-fill); stroke: var(--gray-stroke); stroke-width: .8; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>DiffView component hierarchy</h1>
+    <p>Custom SwiftUI components and major containers. Primitive controls are grouped at the bottom.</p>
+    <div class="diagram">
+      <svg viewBox="0 0 680 1120" role="img" aria-label="DiffView component hierarchy">
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5"/>
+          </marker>
+        </defs>
+
+        <text class="th" x="340" y="22" text-anchor="middle">DiffView hierarchy</text>
+        <text class="ts" x="340" y="40" text-anchor="middle">Sources/PRReviewDesktop/Views/DiffView.swift</text>
+
+        <g class="node c-purple">
+          <rect x="250" y="54" width="180" height="46" rx="8"/>
+          <text class="th" x="340" y="73" text-anchor="middle" dominant-baseline="central">DiffView</text>
+          <text class="ts" x="340" y="89" text-anchor="middle" dominant-baseline="central">root component</text>
+        </g>
+        <path class="arr" d="M340 100V124"/>
+
+        <g class="node c-gray">
+          <rect x="270" y="124" width="140" height="44" rx="8"/>
+          <text class="th" x="340" y="143" text-anchor="middle" dominant-baseline="central">body</text>
+          <text class="ts" x="340" y="158" text-anchor="middle" dominant-baseline="central">state switch</text>
+        </g>
+        <path class="arr" d="M310 168L180 184"/>
+        <path class="arr" d="M370 168L520 184"/>
+
+        <g class="box">
+          <rect x="30" y="184" width="300" height="154" rx="12"/>
+          <text class="th" x="48" y="205">Fallback states</text>
+          <text class="ts" x="48" y="220">three conditional branches</text>
+          <g class="node c-teal">
+            <rect x="48" y="231" width="264" height="29" rx="6"/>
+            <text class="t" x="180" y="246" text-anchor="middle" dominant-baseline="central">EmptyStateView</text>
+            <text class="ts" x="296" y="246" text-anchor="end" dominant-baseline="central">binary</text>
+          </g>
+          <g class="node c-teal">
+            <rect x="48" y="266" width="264" height="29" rx="6"/>
+            <text class="t" x="180" y="281" text-anchor="middle" dominant-baseline="central">EmptyStateView</text>
+            <text class="ts" x="296" y="281" text-anchor="end" dominant-baseline="central">too large</text>
+          </g>
+          <g class="node c-teal">
+            <rect x="48" y="301" width="264" height="29" rx="6"/>
+            <text class="t" x="180" y="316" text-anchor="middle" dominant-baseline="central">EmptyStateView</text>
+            <text class="ts" x="296" y="316" text-anchor="end" dominant-baseline="central">no hunks</text>
+          </g>
+        </g>
+
+        <g class="node c-gray">
+          <rect x="430" y="184" width="180" height="46" rx="8"/>
+          <text class="th" x="520" y="203" text-anchor="middle" dominant-baseline="central">diffScroll</text>
+          <text class="ts" x="520" y="219" text-anchor="middle" dominant-baseline="central">normal diff path</text>
+        </g>
+        <path class="arr" d="M520 230L340 368"/>
+
+        <g class="node c-gray">
+          <rect x="230" y="368" width="220" height="42" rx="8"/>
+          <text class="th" x="340" y="386" text-anchor="middle" dominant-baseline="central">GeometryReader</text>
+          <text class="ts" x="340" y="401" text-anchor="middle" dominant-baseline="central">pane width</text>
+        </g>
+        <path class="arr" d="M340 410V420"/>
+        <g class="node c-gray">
+          <rect x="230" y="420" width="220" height="42" rx="8"/>
+          <text class="th" x="340" y="438" text-anchor="middle" dominant-baseline="central">ScrollViewReader</text>
+          <text class="ts" x="340" y="453" text-anchor="middle" dominant-baseline="central">programmatic scroll</text>
+        </g>
+        <path class="arr" d="M340 462V472"/>
+        <g class="node c-gray">
+          <rect x="230" y="472" width="220" height="42" rx="8"/>
+          <text class="th" x="340" y="490" text-anchor="middle" dominant-baseline="central">Vertical ScrollView</text>
+          <text class="ts" x="340" y="505" text-anchor="middle" dominant-baseline="central">outer scrolling</text>
+        </g>
+        <path class="arr" d="M340 514V524"/>
+        <g class="node c-gray">
+          <rect x="230" y="524" width="220" height="42" rx="8"/>
+          <text class="th" x="340" y="542" text-anchor="middle" dominant-baseline="central">Horizontal ScrollView</text>
+          <text class="ts" x="340" y="557" text-anchor="middle" dominant-baseline="central">long lines</text>
+        </g>
+        <path class="arr" d="M340 566V576"/>
+        <g class="node c-gray">
+          <rect x="230" y="576" width="220" height="42" rx="8"/>
+          <text class="th" x="340" y="594" text-anchor="middle" dominant-baseline="central">LazyVStack</text>
+          <text class="ts" x="340" y="609" text-anchor="middle" dominant-baseline="central">diff rows</text>
+        </g>
+        <path class="arr" d="M340 618V628"/>
+        <g class="node c-gray">
+          <rect x="230" y="628" width="220" height="42" rx="8"/>
+          <text class="th" x="340" y="646" text-anchor="middle" dominant-baseline="central">ForEach</text>
+          <text class="ts" x="340" y="661" text-anchor="middle" dominant-baseline="central">displayRows()</text>
+        </g>
+        <path class="arr" d="M340 670V680"/>
+
+        <g class="node c-teal">
+          <rect x="230" y="680" width="220" height="46" rx="8"/>
+          <text class="th" x="340" y="699" text-anchor="middle" dominant-baseline="central">DiffRowView</text>
+          <text class="ts" x="340" y="715" text-anchor="middle" dominant-baseline="central">one display row</text>
+        </g>
+        <path class="arr" d="M340 726V742"/>
+
+        <g class="box">
+          <rect x="30" y="742" width="620" height="174" rx="12"/>
+          <text class="th" x="48" y="763">DiffRowView.rowContent</text>
+          <text class="ts" x="48" y="779">selected by Row case</text>
+          <path class="arr" d="M340 779L140 794"/>
+          <path class="arr" d="M340 779V794"/>
+          <path class="arr" d="M340 779L540 794"/>
+
+          <g class="node c-teal">
+            <rect x="48" y="794" width="184" height="40" rx="7"/>
+            <text class="th" x="140" y="812" text-anchor="middle" dominant-baseline="central">HunkHeaderView</text>
+            <text class="ts" x="140" y="827" text-anchor="middle" dominant-baseline="central">hunk header</text>
+          </g>
+          <g class="node c-teal">
+            <rect x="248" y="794" width="184" height="40" rx="7"/>
+            <text class="th" x="340" y="812" text-anchor="middle" dominant-baseline="central">DiffLineView</text>
+            <text class="ts" x="340" y="827" text-anchor="middle" dominant-baseline="central">code line</text>
+          </g>
+          <g class="node c-teal">
+            <rect x="448" y="794" width="184" height="40" rx="7"/>
+            <text class="th" x="540" y="812" text-anchor="middle" dominant-baseline="central">ThreadCardView</text>
+            <text class="ts" x="540" y="827" text-anchor="middle" dominant-baseline="central">review thread</text>
+          </g>
+          <g class="node c-gray">
+            <rect x="48" y="852" width="184" height="40" rx="7"/>
+            <text class="th" x="140" y="870" text-anchor="middle" dominant-baseline="central">draftCard</text>
+            <text class="ts" x="140" y="885" text-anchor="middle" dominant-baseline="central">private helper</text>
+          </g>
+          <g class="node c-gray">
+            <rect x="248" y="852" width="184" height="40" rx="7"/>
+            <text class="th" x="340" y="870" text-anchor="middle" dominant-baseline="central">Text</text>
+            <text class="ts" x="340" y="885" text-anchor="middle" dominant-baseline="central">empty/status rows</text>
+          </g>
+          <path class="dash" d="M540 834V852"/>
+          <g class="node c-teal">
+            <rect x="448" y="852" width="184" height="40" rx="7"/>
+            <text class="th" x="540" y="870" text-anchor="middle" dominant-baseline="central">ReplyEditorView</text>
+            <text class="ts" x="540" y="885" text-anchor="middle" dominant-baseline="central">optional child</text>
+          </g>
+        </g>
+
+        <path class="dash" d="M430 703H638V956H450"/>
+        <g class="node c-teal">
+          <rect x="230" y="956" width="220" height="46" rx="8"/>
+          <text class="th" x="340" y="975" text-anchor="middle" dominant-baseline="central">DraftEditorView</text>
+          <text class="ts" x="340" y="991" text-anchor="middle" dominant-baseline="central">optional inline editor</text>
+        </g>
+
+        <g class="box">
+          <rect x="30" y="1030" width="620" height="50" rx="10"/>
+          <text class="th" x="48" y="1050">Leaf primitives</text>
+          <text class="ts" x="48" y="1067">Image · Text · TextEditor · Button · HStack · VStack · Spacer · RoundedRectangle</text>
+        </g>
+      </svg>
+    </div>
+  </main>
+</body>
+</html>

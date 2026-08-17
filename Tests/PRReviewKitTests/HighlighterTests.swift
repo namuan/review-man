@@ -23,6 +23,11 @@ final class HighlighterTests: XCTestCase {
         XCTAssertTrue(tokens.contains { $0.kind == .comment })
     }
 
+    func testPythonDecoratorsAdvancePastAtPrefix() {
+        let lang = Highlighter.language(for: "script.py")
+        XCTAssertTrue(Highlighter.tokenize("@staticmethod", lang).isEmpty)
+    }
+
     func testJSONLiterals() {
         let lang = Highlighter.language(for: "data.json")
         let line = "{\"key\": true, \"num\": 12.5}"

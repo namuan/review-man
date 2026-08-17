@@ -128,9 +128,11 @@ public enum Highlighter {
                 continue
             }
 
-            // Identifier / keyword / type
+            // Identifier / keyword / type. `@` and `$` are valid prefixes in
+            // several supported languages; always advance past the prefix so
+            // a standalone prefix cannot leave the tokenizer at the same index.
             if c.isLetter || c == "_" || c == "@" || c == "$" {
-                var j = i
+                var j = i + 1
                 while j < n, chars[j].isLetter || chars[j].isNumber || chars[j] == "_" { j += 1 }
                 let word = String(chars[i..<j])
                 var kind: TokenKind = .plain
