@@ -1,4 +1,5 @@
 import SwiftUI
+import Foundation
 import PRReviewKit
 
 /// A spatial overview of every file changed by the pull request.
@@ -17,11 +18,16 @@ public enum CanvasScale: Equatable {
     case summary
 
     /// PRs larger than 60 files or ~12k diff lines get condensed cards;
-    /// larger than 300 files or ~60k lines get summary-only cards. These map
-    /// to the demo tiers: medium stays full, large condenses, xlarge degrades
-    /// to summaries.
+    /// larger than 300 files or ~60k lines get summary-only cards. A full
+    /// canvas additionally stays within a small render budget: full cards
+    /// mount one row per hunk line, so diffs beyond `fullCardLineBudget`
+    /// rows collapse to file-name cards even when the file/line thresholds
+    /// are not crossed. The demo tiers map as: small stays full, medium
+    /// condenses (10k demo lines exceed the budget), large condenses,
+    /// xlarge degrades to summaries.
     public static let condensedFileThreshold = 60
     public static let condensedLineThreshold = 12_000
+    public static let fullCardLineBudget = 2_000
     public static let summaryFileThreshold = 300
     public static let summaryLineThreshold = 60_000
 
@@ -30,7 +36,9 @@ public enum CanvasScale: Equatable {
         if files.count > summaryFileThreshold || totalLines > summaryLineThreshold {
             return .summary
         }
-        if files.count > condensedFileThreshold || totalLines > condensedLineThreshold {
+        if files.count > condensedFileThreshold
+            || totalLines > condensedLineThreshold
+            || totalLines > fullCardLineBudget {
             return .condensed
         }
         return .full
@@ -49,7 +57,6 @@ public struct ChangeCanvasView: View {
     @Binding public var zoom: CGFloat
 
     @State private var pinchStartZoom: CGFloat?
-    @State private var canvasContentSize = CGSize.zero
     /// At most one condensed card expands inline at a time, preserving the
     /// large-PR canvas's light layout while allowing focused inspection.
     @State private var expandedCondensedPath: String?
@@ -88,8 +95,7 @@ public struct ChangeCanvasView: View {
                 GeometryReader { geometry in
                     ZStack(alignment: .topLeading) {
                         canvasScroll(
-                            viewportWidth: geometry.size.width,
-                            viewportHeight: geometry.size.height
+                            viewportWidth: geometry.size.width
                         )
                     }
                     // Attach magnification to a parent of the ScrollView. This
@@ -190,7 +196,7 @@ public struct ChangeCanvasView: View {
         }
     }
 
-    private func canvasScroll(viewportWidth: CGFloat, viewportHeight: CGFloat) -> some View {
+    private func canvasScroll(viewportWidth: CGFloat) -> some View {
         let minimumBoardWidth = cardMinimumWidth * 2 + cardGap
         let maximumBoardWidth = cardMaximumWidth * 4 + cardGap * 3
         let boardWidth = min(
@@ -203,18 +209,15 @@ public struct ChangeCanvasView: View {
         )
         let columnWidth = (boardWidth - CGFloat(columnCount - 1) * cardGap)
             / CGFloat(columnCount)
-        // Degraded cards have a fixed height, so calculate their board height
-        // directly. SwiftUI's intrinsic-size measurement can lag after a full
-        // patch card collapses to a file-name card, leaving no vertical range
-        // for the trackpad to scroll.
-        let rowsInTallestColumn = Int(ceil(Double(files.count) / Double(columnCount)))
-        let compactBoardHeight: CGFloat = scale == .full ? 0 :
-            CGFloat(rowsInTallestColumn) * CanvasLayoutMetrics.compactCardHeight
-            + CGFloat(max(0, rowsInTallestColumn - 1)) * cardGap
-            + CanvasLayoutMetrics.outerPadding * 2
 
         return ScrollView([.horizontal, .vertical], showsIndicators: true) {
-            ZStack(alignment: .topLeading) {
+            // scaleEffect changes pixels, not layout. CanvasZoomLayout measures
+            // the unscaled board and reports the zoomed size synchronously in
+            // the same layout pass, so the scroll document always matches the
+            // rendered board. The previous preference-based measurement could
+            // deliver a stale or viewport-sized height, which left the
+            // document with no vertical range and killed trackpad scrolling.
+            CanvasZoomLayout(zoom: zoom) {
                 HStack(alignment: .top, spacing: cardGap) {
                     ForEach(0..<columnCount, id: \.self) { column in
                         VStack(alignment: .leading, spacing: cardGap) {
@@ -239,38 +242,11 @@ public struct ChangeCanvasView: View {
                     }
                     .allowsHitTesting(false)
                 }
-                // scaleEffect changes pixels, not layout. Measure the unscaled
-                // board and give the scroll view a matching scaled content frame;
-                // otherwise the cards look larger but the scroll view still thinks
-                // the board has its original size.
-                .background {
-                    GeometryReader { proxy in
-                        Color.clear.preference(
-                            key: CanvasContentSizeKey.self,
-                            value: proxy.size
-                        )
-                    }
-                }
                 .scaleEffect(zoom, anchor: .topLeading)
             }
-            // Align the transformed board to the top-left explicitly. Without
-            // a wrapper, SwiftUI can center a transformed child in the scroll
-            // content area and leave a large blank band above the first card.
-            .frame(
-                width: max(canvasContentSize.width, boardWidth + 48) * zoom,
-                height: max(
-                    max(canvasContentSize.height, compactBoardHeight),
-                    viewportHeight / max(zoom, 0.01)
-                ) * zoom,
-                alignment: .topLeading
-            )
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color(nsColor: .windowBackgroundColor))
-        .onPreferenceChange(CanvasContentSizeKey.self) { size in
-            guard size.width > 0, size.height > 0 else { return }
-            canvasContentSize = size
-        }
         .onMoveCommand { direction in
             // The canvas itself navigates files with the arrow keys. Once a
             // card is opened, the focused diff restores line-level movement.
@@ -390,11 +366,54 @@ private enum CanvasLayoutMetrics {
     static let compactCardHeight: CGFloat = 48
 }
 
-private struct CanvasContentSizeKey: PreferenceKey {
-    static let defaultValue = CGSize.zero
+/// Sizes the scroll document to the zoomed board. `scaleEffect` only changes
+/// rendering, not layout, so without this wrapper the scroll view would think
+/// the board is its unscaled size. Measuring here, synchronously in the same
+/// layout pass, avoids the asynchronous preference that previously left the
+/// document at (or below) the viewport height and killed vertical trackpad
+/// scrolling.
+private struct CanvasZoomLayout: Layout {
+    var zoom: CGFloat
 
-    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
-        value = nextValue()
+    struct Cache {
+        var invocationID: Int = 0
+    }
+
+    func makeCache(subviews: Subviews) -> Cache {
+        Cache()
+    }
+
+    func sizeThatFits(
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout Cache
+    ) -> CGSize {
+        cache.invocationID += 1
+        let start = CFAbsoluteTimeGetCurrent()
+        let raw = subviews[0].sizeThatFits(.unspecified)
+        let measureElapsed = CFAbsoluteTimeGetCurrent() - start
+        let z = max(zoom, 0.01)
+        let size = CGSize(
+            width: max(raw.width * z, proposal.width ?? raw.width * z),
+            height: max(raw.height * z, proposal.height ?? raw.height * z)
+        )
+        let totalElapsed = CFAbsoluteTimeGetCurrent() - start
+        AppLog.info("canvas", "CANVAS_METRIC fit #\(cache.invocationID) proposal=(\(proposal.width.map(String.init) ?? "nil"), \(proposal.height.map(String.init) ?? "nil")) zoom=\(zoom) raw=\(raw) size=\(size) measureMs=\(Int(measureElapsed * 1000)) fitMs=\(Int(totalElapsed * 1000))")
+        return size
+    }
+
+    func placeSubviews(
+        in bounds: CGRect,
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout Cache
+    ) {
+        let start = CFAbsoluteTimeGetCurrent()
+        // The child lays out at its unscaled size; the scaleEffect anchored at
+        // .topLeading scales it to fill the zoomed document bounds exactly.
+        subviews[0].place(at: bounds.origin, anchor: .topLeading, proposal: .unspecified)
+        let elapsed = CFAbsoluteTimeGetCurrent() - start
+        AppLog.info("canvas", "CANVAS_METRIC place bounds=\(bounds.size) ms=\(Int(elapsed * 1000))")
     }
 }
 

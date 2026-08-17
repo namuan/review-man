@@ -4,8 +4,9 @@ import XCTest
 
 /// The canvas chooses a rendering tier from the PR's size so `make demo`-scale
 /// PRs stay interactive. These tests pin the tiers to the demo scale table:
-/// small/medium render full patch cards, large and xlarge collapse to
-/// file-name cards.
+/// small renders full patch cards; medium (10k demo lines) exceeds the full
+/// canvas render budget and condenses; large collapses to file-name cards;
+/// xlarge degrades to summaries.
 final class CanvasScaleTests: XCTestCase {
 
     private func makeFiles(count: Int, linesPerFile: Int) -> [DiffFile] {
@@ -35,9 +36,26 @@ final class CanvasScaleTests: XCTestCase {
         XCTAssertEqual(CanvasScale.forFiles(makeFiles(count: 4, linesPerFile: 8)), .full)
     }
 
-    func testMediumDemoStaysFull() {
-        // 50 files / 10k lines — under both condensed thresholds.
-        XCTAssertEqual(CanvasScale.forFiles(makeFiles(count: 50, linesPerFile: 200)), .full)
+    func testMediumDemoCondenses() {
+        // 50 files / 10k lines — under the file/line thresholds but far over
+        // the 2k-row full-canvas render budget, so the canvas condenses.
+        XCTAssertEqual(CanvasScale.forFiles(makeFiles(count: 50, linesPerFile: 200)), .condensed)
+    }
+
+    func testFullBudgetBoundaryStaysFull() {
+        // Exactly the 2,000-row budget keeps full patch cards.
+        XCTAssertEqual(CanvasScale.forFiles(makeFiles(count: 20, linesPerFile: 100)), .full)
+    }
+
+    func testFullBudgetBoundaryExceededCondenses() {
+        // One row over the budget collapses to file-name cards.
+        XCTAssertEqual(CanvasScale.forFiles(makeFiles(count: 20, linesPerFile: 101)), .condensed)
+    }
+
+    func testStocksightShapedPRCondenses() {
+        // A real-world 46-file PR with ~5k diff lines (shirosaidev/stocksight#19)
+        // is well over the budget and must not render full patch cards.
+        XCTAssertEqual(CanvasScale.forFiles(makeFiles(count: 46, linesPerFile: 110)), .condensed)
     }
 
     func testLargeDemoBecomesCondensed() {
