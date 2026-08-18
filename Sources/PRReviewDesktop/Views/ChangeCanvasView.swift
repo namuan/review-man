@@ -55,7 +55,6 @@ public struct ChangeCanvasView: View {
     public let files: [DiffFile]
     @Binding public var showCanvas: Bool
     @Binding public var zoom: CGFloat
-    @Environment(\.colorScheme) private var colorScheme
 
     @State private var pinchStartZoom: CGFloat?
     /// Viewport area available below the toolbar, used to fit the tree.
@@ -284,9 +283,6 @@ public struct ChangeCanvasView: View {
                 .frame(width: plan.boardSize.width, height: plan.boardSize.height)
                 .fixedSize()
                 .background {
-                    mapSea
-                }
-                .background {
                     // Reports the unscaled board size (preference value) so
                     // the Fit button and the initial fit-zoom can frame the
                     // whole tree in the viewport.
@@ -298,15 +294,6 @@ public struct ChangeCanvasView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background {
-            // Open ocean behind the board: the gradient stays fixed while the
-            // board (waves, compass, chips) scrolls and zooms above it.
-            LinearGradient(
-                colors: [MapPalette.seaTop(colorScheme), MapPalette.seaBottom(colorScheme)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-        }
         .onMoveCommand { direction in
             // Up/down navigate files. Left/right collapse or expand the
             // focused folder; opening a chip restores focused-diff navigation.
@@ -402,51 +389,6 @@ public struct ChangeCanvasView: View {
         }
         .allowsHitTesting(false)
         .accessibilityHidden(true)
-    }
-
-    private var mapSea: some View {
-        Canvas { context, size in
-            let wave = MapPalette.wave(colorScheme)
-            var row: CGFloat = 22
-            var index = 0
-            while row < size.height {
-                var path = Path()
-                path.move(to: CGPoint(x: 0, y: row))
-                var x: CGFloat = 0
-                while x <= size.width {
-                    let y = row + CGFloat(sin(Double(x) / 76.0 + Double(index) * 1.4)) * 3.5
-                    path.addLine(to: CGPoint(x: x, y: y))
-                    x += 14
-                }
-                context.stroke(path, with: .color(wave), lineWidth: 1)
-                row += 54 + CGFloat(index % 3) * 8
-                index += 1
-            }
-            drawCompass(in: &context, center: CGPoint(x: size.width - 68, y: 72), size: 26, color: wave)
-        }
-        .allowsHitTesting(false)
-    }
-
-    private func drawCompass(in context: inout GraphicsContext, center: CGPoint, size: CGFloat, color: Color) {
-        context.stroke(
-            Path(ellipseIn: CGRect(
-                x: center.x - size, y: center.y - size,
-                width: size * 2, height: size * 2
-            )),
-            with: .color(color),
-            lineWidth: 1.2
-        )
-        var spokes = Path()
-        for i in 0..<8 {
-            let angle = Double(i) * .pi / 4
-            let length = i.isMultiple(of: 2) ? size - 4 : size - 10
-            spokes.move(to: center)
-            spokes.addLine(to: CGPoint(
-                x: center.x + CGFloat(cos(angle)) * CGFloat(length),
-                y: center.y + CGFloat(sin(angle)) * CGFloat(length)
-            ))
-        }
-        context.stroke(spokes, with: .color(color), lineWidth: 1)
     }
 
     private var magnificationGesture: some Gesture {
@@ -1031,26 +973,6 @@ private struct CanvasBoardSizeKey: PreferenceKey {
         if next.width > 0, next.height > 0 {
             value = next
         }
-    }
-}
-
-private enum MapPalette {
-    static func seaTop(_ scheme: ColorScheme) -> Color {
-        scheme == .dark
-            ? Color(red: 0.10, green: 0.19, blue: 0.27)
-            : Color(red: 0.83, green: 0.90, blue: 0.95)
-    }
-
-    static func seaBottom(_ scheme: ColorScheme) -> Color {
-        scheme == .dark
-            ? Color(red: 0.06, green: 0.12, blue: 0.20)
-            : Color(red: 0.72, green: 0.83, blue: 0.92)
-    }
-
-    static func wave(_ scheme: ColorScheme) -> Color {
-        scheme == .dark
-            ? Color(red: 0.45, green: 0.68, blue: 0.87).opacity(0.22)
-            : Color(red: 0.30, green: 0.52, blue: 0.70).opacity(0.26)
     }
 }
 
