@@ -67,6 +67,8 @@ public struct ChangeCanvasView: View {
     @State private var didAutoFit = false
     /// Folder IDs whose descendants are currently hidden from the canvas.
     @State private var collapsedFolderIDs: Set<String> = []
+    /// The folder targeted by single-node keyboard shortcuts.
+    @FocusState private var focusedFolderID: String?
 
     public static func clampedZoom(_ value: CGFloat) -> CGFloat {
         min(maximumZoom, max(minimumZoom, value))
@@ -128,6 +130,23 @@ public struct ChangeCanvasView: View {
                 // state must not carry into a coincidentally shaped next tree.
                 didAutoFit = false
                 collapsedFolderIDs = []
+                focusedFolderID = nil
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .reviewCanvasCollapseFolderRequest)) { note in
+                guard targetsThisStore(note) else { return }
+                collapseFocusedFolder(in: CanvasTree.build(from: files))
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .reviewCanvasExpandFolderRequest)) { note in
+                guard targetsThisStore(note) else { return }
+                expandFocusedFolder(in: CanvasTree.build(from: files))
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .reviewCanvasCollapseAllFoldersRequest)) { note in
+                guard targetsThisStore(note) else { return }
+                collapseAllFolders(in: CanvasTree.build(from: files))
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .reviewCanvasExpandAllFoldersRequest)) { note in
+                guard targetsThisStore(note) else { return }
+                expandAllFolders()
             }
         }
     }
@@ -201,14 +220,21 @@ public struct ChangeCanvasView: View {
             .font(.caption)
             .help("Zoom to fit the whole tree")
 
-            if !collapsedFolderIDs.isEmpty {
-                Button("Expand all") {
-                    expandAllFolders()
-                }
-                .buttonStyle(.borderless)
-                .font(.caption)
-                .help("Expand every folder in the tree")
+            Button("Collapse all") {
+                collapseAllFolders(in: tree)
             }
+            .buttonStyle(.borderless)
+            .font(.caption)
+            .disabled(collapsedFolderIDs.count == tree.folderCount)
+            .help("Collapse every folder in the tree")
+
+            Button("Expand all") {
+                expandAllFolders()
+            }
+            .buttonStyle(.borderless)
+            .font(.caption)
+            .disabled(collapsedFolderIDs.isEmpty)
+            .help("Expand every folder in the tree")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
@@ -282,13 +308,17 @@ public struct ChangeCanvasView: View {
             )
         }
         .onMoveCommand { direction in
-            // The canvas itself navigates files with the arrow keys. Once a
-            // chip is opened, the focused diff restores line-level movement.
+            // Up/down navigate files. Left/right collapse or expand the
+            // focused folder; opening a chip restores focused-diff navigation.
             switch direction {
             case .up:
                 store.selectPreviousFile()
             case .down:
                 store.selectNextFile()
+            case .left:
+                collapseFocusedFolder(in: CanvasTree.build(from: files))
+            case .right:
+                expandFocusedFolder(in: CanvasTree.build(from: files))
             default:
                 break
             }
@@ -318,7 +348,8 @@ public struct ChangeCanvasView: View {
         if node.isFolder {
             let isCollapsed = collapsedFolderIDs.contains(node.id)
             Button {
-                toggleFolder(node)
+                focusedFolderID = node.id
+                toggleFolder(node, in: CanvasTree.build(from: files))
             } label: {
                 TreeFolderChip(
                     node: node,
@@ -330,6 +361,7 @@ public struct ChangeCanvasView: View {
             .help(isCollapsed ? "Expand folder" : "Collapse folder")
             .accessibilityIdentifier("canvas-folder-\(node.path)")
             .accessibilityLabel("\(isCollapsed ? "Expand" : "Collapse") \(node.name) folder, \(descendantFileCount) \(descendantFileCount == 1 ? "file" : "files")")
+            .focused($focusedFolderID, equals: node.id)
         } else if let file = node.file {
             Button {
                 open(file)
@@ -443,13 +475,69 @@ public struct ChangeCanvasView: View {
         zoom = Self.defaultZoom
     }
 
-    private func toggleFolder(_ node: CanvasTree.Node) {
+    private func toggleFolder(_ node: CanvasTree.Node, in tree: CanvasTree) {
+        if collapsedFolderIDs.contains(node.id) {
+            expandFolderOneLevel(node.id, in: tree)
+        } else {
+            collapseFolderOneLevel(node.id, in: tree)
+        }
+    }
+
+    private func collapseFocusedFolder(in tree: CanvasTree) {
+        guard let folderID = focusedFolderID,
+              tree.nodes.contains(where: { $0.id == folderID && $0.isFolder }) else {
+            return
+        }
+        collapseFolderOneLevel(folderID, in: tree)
+    }
+
+    private func expandFocusedFolder(in tree: CanvasTree) {
+        guard let folderID = focusedFolderID,
+              tree.nodes.contains(where: { $0.id == folderID && $0.isFolder }) else {
+            return
+        }
+        expandFolderOneLevel(folderID, in: tree)
+    }
+
+    /// Collapses immediate child folders first. A second collapse closes this
+    /// folder after every child folder is already collapsed.
+    private func collapseFolderOneLevel(_ folderID: String, in tree: CanvasTree) {
+        let childFolderIDs = tree.childFolderIDs(of: folderID)
+        let expandedChildFolderIDs = childFolderIDs.subtracting(collapsedFolderIDs)
+
         withAnimation(.easeInOut(duration: 0.2)) {
-            if collapsedFolderIDs.contains(node.id) {
-                collapsedFolderIDs.remove(node.id)
+            if expandedChildFolderIDs.isEmpty {
+                _ = collapsedFolderIDs.insert(folderID)
             } else {
-                collapsedFolderIDs.insert(node.id)
+                collapsedFolderIDs.formUnion(expandedChildFolderIDs)
             }
+        }
+    }
+
+    /// Reveals direct children only. Once a folder is open, each invocation
+    /// expands its collapsed child folders by one further level.
+    private func expandFolderOneLevel(_ folderID: String, in tree: CanvasTree) {
+        let childFolderIDs = tree.childFolderIDs(of: folderID)
+
+        withAnimation(.easeInOut(duration: 0.2)) {
+            if collapsedFolderIDs.contains(folderID) {
+                _ = collapsedFolderIDs.remove(folderID)
+                collapsedFolderIDs.formUnion(tree.descendantFolderIDs(of: folderID))
+                return
+            }
+
+            let collapsedChildFolderIDs = childFolderIDs.intersection(collapsedFolderIDs)
+            for childFolderID in collapsedChildFolderIDs {
+                _ = collapsedFolderIDs.remove(childFolderID)
+                collapsedFolderIDs.formUnion(tree.descendantFolderIDs(of: childFolderID))
+            }
+        }
+    }
+
+    private func collapseAllFolders(in tree: CanvasTree) {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            collapsedFolderIDs = Set(tree.nodes.lazy.filter(\.isFolder).map(\.id))
+            focusedFolderID = tree.nodes.first?.id
         }
     }
 
@@ -501,6 +589,11 @@ public struct ChangeCanvasView: View {
     private func canvasAccessibilityLabel(for file: DiffFile) -> String {
         let viewed = fileIsViewed(file) ? ", viewed" : ""
         return "\(file.path), \(file.additions) additions, \(file.deletions) deletions\(viewed)"
+    }
+
+    private func targetsThisStore(_ note: Notification) -> Bool {
+        guard let target = note.object as? ReviewSessionStore else { return true }
+        return target === store
     }
 }
 
@@ -610,6 +703,42 @@ struct CanvasTree: Equatable {
         )
     }
 
+    /// Folder IDs that are direct children of `nodeID`.
+    func childFolderIDs(of nodeID: String) -> Set<String> {
+        guard let parentIndex = nodes.firstIndex(where: { $0.id == nodeID }) else {
+            return []
+        }
+        return Set(nodes.enumerated().compactMap { index, node in
+            parents[index] == parentIndex && node.isFolder ? node.id : nil
+        })
+    }
+
+    /// Folder IDs below `nodeID`, excluding the node itself.
+    func descendantFolderIDs(of nodeID: String) -> Set<String> {
+        guard let rootIndex = nodes.firstIndex(where: { $0.id == nodeID }) else {
+            return []
+        }
+
+        var children: [[Int]] = Array(repeating: [], count: nodes.count)
+        for (index, parent) in parents.enumerated() {
+            if let parent {
+                children[parent].append(index)
+            }
+        }
+
+        var descendantIDs: Set<String> = []
+        func collect(_ index: Int) {
+            for child in children[index] {
+                if nodes[child].isFolder {
+                    descendantIDs.insert(nodes[child].id)
+                }
+                collect(child)
+            }
+        }
+        collect(rootIndex)
+        return descendantIDs
+    }
+
     /// Returns a layout-ready tree that retains each collapsed folder but hides
     /// all of its descendants. Stored subtree counts stay attached to the
     /// folder so its chip can still show the total changed files it contains.
@@ -703,18 +832,9 @@ struct TreePlan {
             }
         }
 
-        // Subtree height bottom-up (children appear after their parent in the
-        // pre-order flattening, so reverse iteration visits them first).
-        var subtreeHeight = sizes.map(\.height)
-        for index in stride(from: count - 1, through: 0, by: -1) {
-            guard !children[index].isEmpty else { continue }
-            let span = children[index].reduce(CGFloat(0)) { $0 + subtreeHeight[$1] }
-                + CGFloat(max(children[index].count - 1, 0)) * rowGap
-            subtreeHeight[index] = max(sizes[index].height, span)
-        }
-
         // Top-down placement: leaves start at the cursor; a parent is centered
-        // over the span of its children.
+        // over the span of its children. Consecutive siblings get `rowGap`,
+        // preventing file chips from appearing as one uninterrupted strip.
         var nodeY: [CGFloat] = Array(repeating: 0, count: count)
         func assignY(_ index: Int, minY: CGFloat) -> CGFloat {
             let own = sizes[index].height
@@ -723,8 +843,11 @@ struct TreePlan {
                 return minY + own
             }
             var cursor = minY
-            for child in children[index] {
+            for (childOffset, child) in children[index].enumerated() {
                 cursor = assignY(child, minY: cursor)
+                if childOffset < children[index].count - 1 {
+                    cursor += rowGap
+                }
             }
             let span = cursor - minY
             nodeY[index] = minY + span / 2 - own / 2

@@ -86,6 +86,42 @@ final class CanvasTreeTests: XCTestCase {
         XCTAssertEqual(collapsed.subtreeFileCounts, [4, 2, 1, 1, 1, 1])
     }
 
+    func testDescendantFolderIDsExcludeTheRequestedFolder() {
+        let tree = CanvasTree.build(from: [
+            file("Sources/App/Engine.swift"),
+            file("Sources/App/Views/Home.swift"),
+            file("README.md"),
+        ])
+        guard let sources = tree.nodes.first(where: { $0.path == "Sources" }) else {
+            return XCTFail("Expected Sources folder")
+        }
+
+        let childFolderIDs = tree.childFolderIDs(of: sources.id)
+        XCTAssertEqual(childFolderIDs, ["folder:Sources/App"])
+
+        let descendantIDs = tree.descendantFolderIDs(of: sources.id)
+        XCTAssertEqual(
+            descendantIDs,
+            ["folder:Sources/App", "folder:Sources/App/Views"]
+        )
+
+        let oneLevel = tree.hidingDescendants(of: childFolderIDs)
+        XCTAssertEqual(oneLevel.nodes.map(\.name), ["Root", "Sources", "App", "README.md"])
+    }
+
+    func testHidingRootDescendantsLeavesOnlyRoot() {
+        let tree = CanvasTree.build(from: [
+            file("Sources/App/Engine.swift"),
+            file("README.md"),
+        ])
+        let collapsed = tree.hidingDescendants(of: [tree.nodes[0].id])
+
+        XCTAssertEqual(collapsed.nodes.map(\.name), ["Root"])
+        XCTAssertEqual(collapsed.parents, [nil])
+        XCTAssertEqual(collapsed.depths, [0])
+        XCTAssertEqual(collapsed.subtreeFileCounts, [2])
+    }
+
     // MARK: - Plan geometry
 
     private func plan(
@@ -142,6 +178,16 @@ final class CanvasTreeTests: XCTestCase {
                 )
             }
         }
+    }
+
+    func testSiblingFramesUseRowGap() {
+        let tree = CanvasTree.build(from: [
+            file("First.swift"),
+            file("Second.swift"),
+        ])
+        let plan = plan(tree: tree)
+
+        XCTAssertEqual(plan.frames[1].maxY + 24, plan.frames[2].minY, accuracy: 0.001)
     }
 
     func testParentCenteredOverChildren() {
