@@ -66,6 +66,26 @@ final class CanvasTreeTests: XCTestCase {
         XCTAssertEqual(tree.subtreeFileCounts, [0])
     }
 
+    func testHidingFolderDescendantsRetainsFolderAndItsTotal() {
+        let tree = CanvasTree.build(from: [
+            file("Sources/App/Engine.swift"),
+            file("Sources/App/Views/Home.swift"),
+            file("Tests/AppTests/EngineTests.swift"),
+            file("README.md"),
+        ])
+        guard let sources = tree.nodes.first(where: { $0.path == "Sources" }) else {
+            return XCTFail("Expected Sources folder")
+        }
+        let collapsed = tree.hidingDescendants(of: [sources.id])
+
+        XCTAssertEqual(collapsed.nodes.map(\.name), [
+            "Root", "Sources", "Tests", "AppTests", "EngineTests.swift", "README.md",
+        ])
+        XCTAssertEqual(collapsed.parents, [nil, 0, 0, 2, 3, 0])
+        XCTAssertEqual(collapsed.depths, [0, 1, 1, 2, 3, 1])
+        XCTAssertEqual(collapsed.subtreeFileCounts, [4, 2, 1, 1, 1, 1])
+    }
+
     // MARK: - Plan geometry
 
     private func plan(

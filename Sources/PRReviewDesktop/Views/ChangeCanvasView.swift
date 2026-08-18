@@ -65,6 +65,8 @@ public struct ChangeCanvasView: View {
     /// True once the initial board measurement has had its chance to fit-zoom;
     /// reset when a new PR loads so its map gets the same treatment.
     @State private var didAutoFit = false
+    /// Folder IDs whose descendants are currently hidden from the canvas.
+    @State private var collapsedFolderIDs: Set<String> = []
 
     public static func clampedZoom(_ value: CGFloat) -> CGFloat {
         min(maximumZoom, max(minimumZoom, value))
@@ -122,8 +124,10 @@ public struct ChangeCanvasView: View {
             }
             .accessibilityIdentifier("change-canvas-pane")
             .onChange(of: store.review?.pr?.headRefOid) { _ in
-                // A reload/new PR gets a fresh fit-zoom pass.
+                // A reload/new PR gets a fresh fit-zoom pass and expansion
+                // state must not carry into a coincidentally shaped next tree.
                 didAutoFit = false
+                collapsedFolderIDs = []
             }
         }
     }
@@ -196,6 +200,15 @@ public struct ChangeCanvasView: View {
             .buttonStyle(.borderless)
             .font(.caption)
             .help("Zoom to fit the whole tree")
+
+            if !collapsedFolderIDs.isEmpty {
+                Button("Expand all") {
+                    expandAllFolders()
+                }
+                .buttonStyle(.borderless)
+                .font(.caption)
+                .help("Expand every folder in the tree")
+            }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
@@ -221,6 +234,7 @@ public struct ChangeCanvasView: View {
 
     private var canvasScroll: some View {
         let tree = CanvasTree.build(from: files)
+            .hidingDescendants(of: collapsedFolderIDs)
         let plan = treePlan(for: tree)
 
         return ScrollView([.horizontal, .vertical], showsIndicators: true) {
@@ -302,7 +316,20 @@ public struct ChangeCanvasView: View {
     @ViewBuilder
     private func treeNodeView(node: CanvasTree.Node, descendantFileCount: Int) -> some View {
         if node.isFolder {
-            TreeFolderChip(node: node, descendantFileCount: descendantFileCount)
+            let isCollapsed = collapsedFolderIDs.contains(node.id)
+            Button {
+                toggleFolder(node)
+            } label: {
+                TreeFolderChip(
+                    node: node,
+                    descendantFileCount: descendantFileCount,
+                    isCollapsed: isCollapsed
+                )
+            }
+            .buttonStyle(.plain)
+            .help(isCollapsed ? "Expand folder" : "Collapse folder")
+            .accessibilityIdentifier("canvas-folder-\(node.path)")
+            .accessibilityLabel("\(isCollapsed ? "Expand" : "Collapse") \(node.name) folder, \(descendantFileCount) \(descendantFileCount == 1 ? "file" : "files")")
         } else if let file = node.file {
             Button {
                 open(file)
@@ -414,6 +441,22 @@ public struct ChangeCanvasView: View {
 
     private func resetZoom() {
         zoom = Self.defaultZoom
+    }
+
+    private func toggleFolder(_ node: CanvasTree.Node) {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            if collapsedFolderIDs.contains(node.id) {
+                collapsedFolderIDs.remove(node.id)
+            } else {
+                collapsedFolderIDs.insert(node.id)
+            }
+        }
+    }
+
+    private func expandAllFolders() {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            collapsedFolderIDs.removeAll()
+        }
     }
 
     /// Zoom that frames `board` inside `viewport` with a small ocean margin.
@@ -566,6 +609,46 @@ struct CanvasTree: Equatable {
             subtreeFileCounts: subtreeCounts
         )
     }
+
+    /// Returns a layout-ready tree that retains each collapsed folder but hides
+    /// all of its descendants. Stored subtree counts stay attached to the
+    /// folder so its chip can still show the total changed files it contains.
+    func hidingDescendants(of collapsedNodeIDs: Set<String>) -> CanvasTree {
+        guard !collapsedNodeIDs.isEmpty else { return self }
+
+        var children: [[Int]] = Array(repeating: [], count: nodes.count)
+        for (index, parent) in parents.enumerated() {
+            if let parent {
+                children[parent].append(index)
+            }
+        }
+
+        var visibleNodes: [Node] = []
+        var visibleParents: [Int?] = []
+        var visibleDepths: [Int] = []
+        var visibleSubtreeCounts: [Int] = []
+
+        func visit(_ sourceIndex: Int, parentIndex: Int?, depth: Int) {
+            let visibleIndex = visibleNodes.count
+            visibleNodes.append(nodes[sourceIndex])
+            visibleParents.append(parentIndex)
+            visibleDepths.append(depth)
+            visibleSubtreeCounts.append(subtreeFileCounts[sourceIndex])
+
+            guard !collapsedNodeIDs.contains(nodes[sourceIndex].id) else { return }
+            for child in children[sourceIndex] {
+                visit(child, parentIndex: visibleIndex, depth: depth + 1)
+            }
+        }
+
+        visit(0, parentIndex: nil, depth: 0)
+        return CanvasTree(
+            nodes: visibleNodes,
+            parents: visibleParents,
+            depths: visibleDepths,
+            subtreeFileCounts: visibleSubtreeCounts
+        )
+    }
 }
 
 // MARK: - Tree geometry
@@ -706,13 +789,18 @@ private enum TreeMetrics {
 
 // MARK: - Chips
 
-/// A folder node: icon, name, and the number of changed files in its subtree.
+/// A folder node: disclosure state, icon, name, and changed-file count.
 private struct TreeFolderChip: View {
     let node: CanvasTree.Node
     let descendantFileCount: Int
+    let isCollapsed: Bool
 
     var body: some View {
         HStack(spacing: 8) {
+            Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(.secondary)
+                .frame(width: 10)
             Image(systemName: "folder.fill")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.orange)
@@ -735,8 +823,7 @@ private struct TreeFolderChip: View {
                 .stroke(Color.orange.opacity(0.35), lineWidth: 1)
         }
         .shadow(color: Color.black.opacity(0.07), radius: 4, y: 2)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(node.name), folder, \(descendantFileCount) \(descendantFileCount == 1 ? "file" : "files")")
+        .contentShape(RoundedRectangle(cornerRadius: 10))
     }
 }
 
