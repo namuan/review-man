@@ -122,6 +122,59 @@ final class CanvasTreeTests: XCTestCase {
         XCTAssertEqual(collapsed.subtreeFileCounts, [2])
     }
 
+    // MARK: - Keyboard navigation
+
+    func testKeyboardNavigationFollowsHierarchyAndVisualOrder() {
+        let tree = CanvasTree.build(from: [
+            file("Sources/App/Engine.swift"),
+            file("README.md"),
+        ])
+        let treePlan = plan(tree: tree)
+
+        XCTAssertEqual(
+            CanvasNodeNavigator.nextNodeID(
+                from: tree.nodes[2].id,
+                direction: .left,
+                tree: tree,
+                plan: treePlan
+            ),
+            tree.nodes[1].id
+        )
+        XCTAssertEqual(
+            CanvasNodeNavigator.nextNodeID(
+                from: tree.nodes[1].id,
+                direction: .right,
+                tree: tree,
+                plan: treePlan
+            ),
+            tree.nodes[2].id
+        )
+
+        let flatTree = CanvasTree.build(from: [
+            file("Sources/Alpha.swift"),
+            file("Sources/Beta.swift"),
+        ])
+        let flatPlan = plan(tree: flatTree)
+        XCTAssertEqual(
+            CanvasNodeNavigator.nextNodeID(
+                from: flatTree.nodes[2].id,
+                direction: .down,
+                tree: flatTree,
+                plan: flatPlan
+            ),
+            flatTree.nodes[3].id
+        )
+        XCTAssertEqual(
+            CanvasNodeNavigator.nextNodeID(
+                from: flatTree.nodes[3].id,
+                direction: .up,
+                tree: flatTree,
+                plan: flatPlan
+            ),
+            flatTree.nodes[2].id
+        )
+    }
+
     // MARK: - Plan geometry
 
     private func plan(
