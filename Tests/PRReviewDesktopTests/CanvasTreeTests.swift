@@ -66,6 +66,115 @@ final class CanvasTreeTests: XCTestCase {
         XCTAssertEqual(tree.subtreeFileCounts, [0])
     }
 
+    func testHidingFolderDescendantsRetainsFolderAndItsTotal() {
+        let tree = CanvasTree.build(from: [
+            file("Sources/App/Engine.swift"),
+            file("Sources/App/Views/Home.swift"),
+            file("Tests/AppTests/EngineTests.swift"),
+            file("README.md"),
+        ])
+        guard let sources = tree.nodes.first(where: { $0.path == "Sources" }) else {
+            return XCTFail("Expected Sources folder")
+        }
+        let collapsed = tree.hidingDescendants(of: [sources.id])
+
+        XCTAssertEqual(collapsed.nodes.map(\.name), [
+            "Root", "Sources", "Tests", "AppTests", "EngineTests.swift", "README.md",
+        ])
+        XCTAssertEqual(collapsed.parents, [nil, 0, 0, 2, 3, 0])
+        XCTAssertEqual(collapsed.depths, [0, 1, 1, 2, 3, 1])
+        XCTAssertEqual(collapsed.subtreeFileCounts, [4, 2, 1, 1, 1, 1])
+    }
+
+    func testDescendantFolderIDsExcludeTheRequestedFolder() {
+        let tree = CanvasTree.build(from: [
+            file("Sources/App/Engine.swift"),
+            file("Sources/App/Views/Home.swift"),
+            file("README.md"),
+        ])
+        guard let sources = tree.nodes.first(where: { $0.path == "Sources" }) else {
+            return XCTFail("Expected Sources folder")
+        }
+
+        let childFolderIDs = tree.childFolderIDs(of: sources.id)
+        XCTAssertEqual(childFolderIDs, ["folder:Sources/App"])
+
+        let descendantIDs = tree.descendantFolderIDs(of: sources.id)
+        XCTAssertEqual(
+            descendantIDs,
+            ["folder:Sources/App", "folder:Sources/App/Views"]
+        )
+
+        let oneLevel = tree.hidingDescendants(of: childFolderIDs)
+        XCTAssertEqual(oneLevel.nodes.map(\.name), ["Root", "Sources", "App", "README.md"])
+    }
+
+    func testHidingRootDescendantsLeavesOnlyRoot() {
+        let tree = CanvasTree.build(from: [
+            file("Sources/App/Engine.swift"),
+            file("README.md"),
+        ])
+        let collapsed = tree.hidingDescendants(of: [tree.nodes[0].id])
+
+        XCTAssertEqual(collapsed.nodes.map(\.name), ["Root"])
+        XCTAssertEqual(collapsed.parents, [nil])
+        XCTAssertEqual(collapsed.depths, [0])
+        XCTAssertEqual(collapsed.subtreeFileCounts, [2])
+    }
+
+    // MARK: - Keyboard navigation
+
+    func testKeyboardNavigationFollowsHierarchyAndVisualOrder() {
+        let tree = CanvasTree.build(from: [
+            file("Sources/App/Engine.swift"),
+            file("README.md"),
+        ])
+        let treePlan = plan(tree: tree)
+
+        XCTAssertEqual(
+            CanvasNodeNavigator.nextNodeID(
+                from: tree.nodes[2].id,
+                direction: .left,
+                tree: tree,
+                plan: treePlan
+            ),
+            tree.nodes[1].id
+        )
+        XCTAssertEqual(
+            CanvasNodeNavigator.nextNodeID(
+                from: tree.nodes[1].id,
+                direction: .right,
+                tree: tree,
+                plan: treePlan
+            ),
+            tree.nodes[2].id
+        )
+
+        let flatTree = CanvasTree.build(from: [
+            file("Sources/Alpha.swift"),
+            file("Sources/Beta.swift"),
+        ])
+        let flatPlan = plan(tree: flatTree)
+        XCTAssertEqual(
+            CanvasNodeNavigator.nextNodeID(
+                from: flatTree.nodes[2].id,
+                direction: .down,
+                tree: flatTree,
+                plan: flatPlan
+            ),
+            flatTree.nodes[3].id
+        )
+        XCTAssertEqual(
+            CanvasNodeNavigator.nextNodeID(
+                from: flatTree.nodes[3].id,
+                direction: .up,
+                tree: flatTree,
+                plan: flatPlan
+            ),
+            flatTree.nodes[2].id
+        )
+    }
+
     // MARK: - Plan geometry
 
     private func plan(
@@ -122,6 +231,16 @@ final class CanvasTreeTests: XCTestCase {
                 )
             }
         }
+    }
+
+    func testSiblingFramesUseRowGap() {
+        let tree = CanvasTree.build(from: [
+            file("First.swift"),
+            file("Second.swift"),
+        ])
+        let plan = plan(tree: tree)
+
+        XCTAssertEqual(plan.frames[1].maxY + 24, plan.frames[2].minY, accuracy: 0.001)
     }
 
     func testParentCenteredOverChildren() {

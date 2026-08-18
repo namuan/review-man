@@ -299,21 +299,32 @@ public struct ReviewWindowView: View {
                         title: "No changed files",
                         message: "This pull request has no file changes."
                     )
-                } else if showCanvas {
-                    ChangeCanvasView(
-                        store: store,
-                        files: review.files,
-                        showCanvas: $showCanvas,
-                        zoom: $canvasZoom
-                    )
-                } else if let file = store.selectedFile {
-                    DiffView(store: store, file: file)
                 } else {
-                    EmptyStateView(
-                        icon: "sidebar.left",
-                        title: "Select a file",
-                        message: "Choose a file from the sidebar to view its diff."
-                    )
+                    // Keep the canvas in the hierarchy while a diff is shown.
+                    // Its internal expansion, keyboard-focus, and scroll
+                    // state then survive switching between the two modes.
+                    ZStack {
+                        ChangeCanvasView(
+                            store: store,
+                            files: review.files,
+                            showCanvas: $showCanvas,
+                            zoom: $canvasZoom
+                        )
+                        .opacity(showCanvas ? 1 : 0)
+                        .allowsHitTesting(showCanvas)
+                        .disabled(!showCanvas)
+                        .accessibilityHidden(!showCanvas)
+
+                        if !showCanvas, let file = store.selectedFile {
+                            DiffView(store: store, file: file)
+                        } else if !showCanvas {
+                            EmptyStateView(
+                                icon: "sidebar.left",
+                                title: "Select a file",
+                                message: "Choose a file from the sidebar to view its diff."
+                            )
+                        }
+                    }
                 }
                 if let banner = store.banner {
                     bannerBar(banner)

@@ -55,7 +55,6 @@ public struct ChangeCanvasView: View {
     public let files: [DiffFile]
     @Binding public var showCanvas: Bool
     @Binding public var zoom: CGFloat
-    @Environment(\.colorScheme) private var colorScheme
 
     @State private var pinchStartZoom: CGFloat?
     /// Viewport area available below the toolbar, used to fit the tree.
@@ -65,6 +64,10 @@ public struct ChangeCanvasView: View {
     /// True once the initial board measurement has had its chance to fit-zoom;
     /// reset when a new PR loads so its map gets the same treatment.
     @State private var didAutoFit = false
+    /// Folder IDs whose descendants are currently hidden from the canvas.
+    @State private var collapsedFolderIDs: Set<String> = []
+    /// The node currently selected for arrow-key navigation.
+    @FocusState private var focusedNodeID: String?
 
     public static func clampedZoom(_ value: CGFloat) -> CGFloat {
         min(maximumZoom, max(minimumZoom, value))
@@ -103,18 +106,22 @@ public struct ChangeCanvasView: View {
                     }
                     .onAppear {
                         viewportSize = geometry.size
+                        AppLog.info("canvas", "CANVAS_APPEAR files=\(files.count) viewport=\(geometry.size) \(canvasDiagnosticContext())")
                         // The board preference can arrive before onAppear when
                         // the first layout beats the appear callback; retry
                         // the fit once the viewport is known.
                         if let board = boardSize {
                             fitInitialZoom(board: board)
                         }
+                        focusedNodeID = focusedNodeID ?? CanvasTree.build(from: files).nodes.first?.id
                     }
                     .onChange(of: geometry.size) { newSize in
                         viewportSize = newSize
+                        AppLog.info("canvas", "CANVAS_VIEWPORT_CHANGE viewport=\(newSize) \(canvasDiagnosticContext())")
                     }
                     .onPreferenceChange(CanvasBoardSizeKey.self) { board in
                         boardSize = board
+                        AppLog.info("canvas", "CANVAS_BOARD_MEASURE board=\(board) \(canvasDiagnosticContext())")
                         fitInitialZoom(board: board)
                     }
                     .simultaneousGesture(magnificationGesture)
@@ -122,8 +129,27 @@ public struct ChangeCanvasView: View {
             }
             .accessibilityIdentifier("change-canvas-pane")
             .onChange(of: store.review?.pr?.headRefOid) { _ in
-                // A reload/new PR gets a fresh fit-zoom pass.
+                // A reload/new PR gets a fresh fit-zoom pass and expansion
+                // state must not carry into a coincidentally shaped next tree.
                 didAutoFit = false
+                collapsedFolderIDs = []
+                focusedNodeID = nil
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .reviewCanvasCollapseFolderRequest)) { note in
+                guard showCanvas, targetsThisStore(note) else { return }
+                collapseFocusedFolder(in: CanvasTree.build(from: files))
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .reviewCanvasExpandFolderRequest)) { note in
+                guard showCanvas, targetsThisStore(note) else { return }
+                expandFocusedFolder(in: CanvasTree.build(from: files))
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .reviewCanvasCollapseAllFoldersRequest)) { note in
+                guard showCanvas, targetsThisStore(note) else { return }
+                collapseAllFolders(in: CanvasTree.build(from: files))
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .reviewCanvasExpandAllFoldersRequest)) { note in
+                guard showCanvas, targetsThisStore(note) else { return }
+                expandAllFolders()
             }
         }
     }
@@ -196,6 +222,22 @@ public struct ChangeCanvasView: View {
             .buttonStyle(.borderless)
             .font(.caption)
             .help("Zoom to fit the whole tree")
+
+            Button("Collapse all") {
+                collapseAllFolders(in: tree)
+            }
+            .buttonStyle(.borderless)
+            .font(.caption)
+            .disabled(collapsedFolderIDs.count == tree.folderCount)
+            .help("Collapse every folder in the tree")
+
+            Button("Expand all") {
+                expandAllFolders()
+            }
+            .buttonStyle(.borderless)
+            .font(.caption)
+            .disabled(collapsedFolderIDs.isEmpty)
+            .help("Expand every folder in the tree")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
@@ -221,60 +263,58 @@ public struct ChangeCanvasView: View {
 
     private var canvasScroll: some View {
         let tree = CanvasTree.build(from: files)
+            .hidingDescendants(of: collapsedFolderIDs)
         let plan = treePlan(for: tree)
+        let boardSize = CGSize(
+            width: plan.boardSize.width * zoom,
+            height: plan.boardSize.height * zoom
+        )
+        let nodeFrames = plan.frames.map { frame in
+            CGRect(
+                x: frame.minX * zoom,
+                y: frame.minY * zoom,
+                width: frame.width * zoom,
+                height: frame.height * zoom
+            )
+        }
 
         return ScrollView([.horizontal, .vertical], showsIndicators: true) {
-            // scaleEffect changes pixels, not layout. CanvasZoomLayout measures
-            // the unscaled board and reports the zoomed size synchronously in
-            // the same layout pass, so the scroll document always matches the
-            // rendered board. The previous preference-based measurement could
-            // deliver a stale or viewport-sized height, which left the
-            // document with no vertical range and killed trackpad scrolling.
-            CanvasZoomLayout(zoom: zoom) {
-                ZStack(alignment: .topLeading) {
-                    // Connector lines under the chips: elbow from each folder
-                    // to its children, derived from the same pure plan.
-                    treeConnectors(plan: plan)
-
-                    ForEach(Array(tree.nodes.enumerated()), id: \.element.id) { index, node in
-                        treeNodeView(node: node, descendantFileCount: tree.subtreeFileCounts[index])
-                            .position(x: plan.frames[index].midX, y: plan.frames[index].midY)
-                    }
+            // Use real scaled layout geometry rather than scaleEffect. The
+            // transform left SwiftUI's button hit regions stale after a tree
+            // reflow until another zoom forced a new hit-test map.
+            CanvasTreeLayout(frames: nodeFrames) {
+                ForEach(Array(tree.nodes.enumerated()), id: \.element.id) { index, node in
+                    treeNodeView(
+                        node: node,
+                        descendantFileCount: tree.subtreeFileCounts[index],
+                        zoom: zoom
+                    )
                 }
-                .frame(width: plan.boardSize.width, height: plan.boardSize.height)
-                .fixedSize()
-                .background {
-                    mapSea
-                }
-                .background {
-                    // Reports the unscaled board size (preference value) so
-                    // the Fit button and the initial fit-zoom can frame the
-                    // whole tree in the viewport.
-                    GeometryReader { proxy in
-                        Color.clear.preference(key: CanvasBoardSizeKey.self, value: proxy.size)
-                    }
-                }
-                .scaleEffect(zoom, anchor: .topLeading)
+            }
+            .frame(width: boardSize.width, height: boardSize.height)
+            .background(treeConnectors(plan: plan, zoom: zoom))
+            .background {
+                // Fit uses the unscaled plan, independently of the rendered
+                // document's current zoom.
+                Color.clear.preference(key: CanvasBoardSizeKey.self, value: plan.boardSize)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background {
-            // Open ocean behind the board: the gradient stays fixed while the
-            // board (waves, compass, chips) scrolls and zooms above it.
-            LinearGradient(
-                colors: [MapPalette.seaTop(colorScheme), MapPalette.seaBottom(colorScheme)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-        }
         .onMoveCommand { direction in
-            // The canvas itself navigates files with the arrow keys. Once a
-            // chip is opened, the focused diff restores line-level movement.
+            guard showCanvas else { return }
+            let tree = CanvasTree.build(from: files)
+                .hidingDescendants(of: collapsedFolderIDs)
+            let plan = treePlan(for: tree)
+
             switch direction {
             case .up:
-                store.selectPreviousFile()
+                moveCanvasFocus(.up, in: tree, plan: plan)
             case .down:
-                store.selectNextFile()
+                moveCanvasFocus(.down, in: tree, plan: plan)
+            case .left:
+                moveCanvasFocus(.left, in: tree, plan: plan)
+            case .right:
+                moveCanvasFocus(.right, in: tree, plan: plan)
             default:
                 break
             }
@@ -300,14 +340,36 @@ public struct ChangeCanvasView: View {
     }
 
     @ViewBuilder
-    private func treeNodeView(node: CanvasTree.Node, descendantFileCount: Int) -> some View {
+    private func treeNodeView(
+        node: CanvasTree.Node,
+        descendantFileCount: Int,
+        zoom: CGFloat
+    ) -> some View {
         if node.isFolder {
-            TreeFolderChip(node: node, descendantFileCount: descendantFileCount)
+            let isCollapsed = collapsedFolderIDs.contains(node.id)
+            Button {
+                AppLog.info("canvas", "CANVAS_FOLDER_TAP id=\(node.id) path=\(node.path) isCollapsed=\(isCollapsed) \(canvasDiagnosticContext())")
+                focusedNodeID = node.id
+                toggleFolder(node, in: CanvasTree.build(from: files))
+            } label: {
+                TreeFolderChip(
+                    node: node,
+                    descendantFileCount: descendantFileCount,
+                    isCollapsed: isCollapsed,
+                    zoom: zoom
+                )
+            }
+            .buttonStyle(.plain)
+            .help(isCollapsed ? "Expand folder" : "Collapse folder")
+            .accessibilityIdentifier("canvas-folder-\(node.path)")
+            .accessibilityLabel("\(isCollapsed ? "Expand" : "Collapse") \(node.name) folder, \(descendantFileCount) \(descendantFileCount == 1 ? "file" : "files")")
+            .focused($focusedNodeID, equals: node.id)
         } else if let file = node.file {
             Button {
+                focusedNodeID = node.id
                 open(file)
             } label: {
-                TreeFileChip(store: store, file: file)
+                TreeFileChip(store: store, file: file, zoom: zoom)
             }
             .buttonStyle(.plain)
             .help("Open focused diff")
@@ -319,75 +381,31 @@ public struct ChangeCanvasView: View {
             }
             .accessibilityIdentifier("canvas-file-\(file.path)")
             .accessibilityLabel(canvasAccessibilityLabel(for: file))
+            .focused($focusedNodeID, equals: node.id)
         }
     }
 
     /// Elbow connectors between parent folders and their children, drawn in
-    /// the same coordinate space the plan places nodes in.
-    private func treeConnectors(plan: TreePlan) -> some View {
+    /// the same coordinate space as the scaled node layout frames.
+    private func treeConnectors(plan: TreePlan, zoom: CGFloat) -> some View {
         Canvas { context, size in
             let lineColor = Color.secondary.opacity(0.4)
             for link in plan.links {
                 let parent = plan.frames[link.parent]
                 let child = plan.frames[link.child]
-                let startX = parent.maxX
-                let endX = child.minX
+                let startX = parent.maxX * zoom
+                let endX = child.minX * zoom
                 let midX = startX + (endX - startX) / 2
                 var path = Path()
-                path.move(to: CGPoint(x: startX, y: parent.midY))
-                path.addLine(to: CGPoint(x: midX, y: parent.midY))
-                path.addLine(to: CGPoint(x: midX, y: child.midY))
-                path.addLine(to: CGPoint(x: endX, y: child.midY))
-                context.stroke(path, with: .color(lineColor), lineWidth: 1.5)
+                path.move(to: CGPoint(x: startX, y: parent.midY * zoom))
+                path.addLine(to: CGPoint(x: midX, y: parent.midY * zoom))
+                path.addLine(to: CGPoint(x: midX, y: child.midY * zoom))
+                path.addLine(to: CGPoint(x: endX, y: child.midY * zoom))
+                context.stroke(path, with: .color(lineColor), lineWidth: 1.5 * zoom)
             }
         }
         .allowsHitTesting(false)
         .accessibilityHidden(true)
-    }
-
-    private var mapSea: some View {
-        Canvas { context, size in
-            let wave = MapPalette.wave(colorScheme)
-            var row: CGFloat = 22
-            var index = 0
-            while row < size.height {
-                var path = Path()
-                path.move(to: CGPoint(x: 0, y: row))
-                var x: CGFloat = 0
-                while x <= size.width {
-                    let y = row + CGFloat(sin(Double(x) / 76.0 + Double(index) * 1.4)) * 3.5
-                    path.addLine(to: CGPoint(x: x, y: y))
-                    x += 14
-                }
-                context.stroke(path, with: .color(wave), lineWidth: 1)
-                row += 54 + CGFloat(index % 3) * 8
-                index += 1
-            }
-            drawCompass(in: &context, center: CGPoint(x: size.width - 68, y: 72), size: 26, color: wave)
-        }
-        .allowsHitTesting(false)
-    }
-
-    private func drawCompass(in context: inout GraphicsContext, center: CGPoint, size: CGFloat, color: Color) {
-        context.stroke(
-            Path(ellipseIn: CGRect(
-                x: center.x - size, y: center.y - size,
-                width: size * 2, height: size * 2
-            )),
-            with: .color(color),
-            lineWidth: 1.2
-        )
-        var spokes = Path()
-        for i in 0..<8 {
-            let angle = Double(i) * .pi / 4
-            let length = i.isMultiple(of: 2) ? size - 4 : size - 10
-            spokes.move(to: center)
-            spokes.addLine(to: CGPoint(
-                x: center.x + CGFloat(cos(angle)) * CGFloat(length),
-                y: center.y + CGFloat(sin(angle)) * CGFloat(length)
-            ))
-        }
-        context.stroke(spokes, with: .color(color), lineWidth: 1)
     }
 
     private var magnificationGesture: some Gesture {
@@ -395,12 +413,14 @@ public struct ChangeCanvasView: View {
             .onChanged { value in
                 if pinchStartZoom == nil {
                     pinchStartZoom = zoom
+                    AppLog.info("canvas", "CANVAS_MAGNIFY_BEGIN value=\(value) \(canvasDiagnosticContext())")
                 }
                 let start = pinchStartZoom ?? zoom
                 zoom = Self.clampedZoom(start * value)
             }
-            .onEnded { _ in
+            .onEnded { value in
                 pinchStartZoom = nil
+                AppLog.info("canvas", "CANVAS_MAGNIFY_END value=\(value) \(canvasDiagnosticContext())")
             }
     }
 
@@ -414,6 +434,104 @@ public struct ChangeCanvasView: View {
 
     private func resetZoom() {
         zoom = Self.defaultZoom
+    }
+
+    private func toggleFolder(_ node: CanvasTree.Node, in tree: CanvasTree) {
+        if collapsedFolderIDs.contains(node.id) {
+            expandFolderOneLevel(node.id, in: tree)
+        } else {
+            collapseFolderOneLevel(node.id, in: tree)
+        }
+    }
+
+    private func collapseFocusedFolder(in tree: CanvasTree) {
+        guard let folderID = focusedNodeID,
+              tree.nodes.contains(where: { $0.id == folderID && $0.isFolder }) else {
+            return
+        }
+        collapseFolderOneLevel(folderID, in: tree)
+    }
+
+    private func expandFocusedFolder(in tree: CanvasTree) {
+        guard let folderID = focusedNodeID,
+              tree.nodes.contains(where: { $0.id == folderID && $0.isFolder }) else {
+            return
+        }
+        expandFolderOneLevel(folderID, in: tree)
+    }
+
+    private func moveCanvasFocus(
+        _ direction: CanvasNodeDirection,
+        in tree: CanvasTree,
+        plan: TreePlan
+    ) {
+        guard let nextNodeID = CanvasNodeNavigator.nextNodeID(
+            from: focusedNodeID,
+            direction: direction,
+            tree: tree,
+            plan: plan
+        ) else {
+            return
+        }
+
+        focusedNodeID = nextNodeID
+        AppLog.info("canvas", "CANVAS_KEYBOARD_FOCUS direction=\(direction) id=\(nextNodeID) \(canvasDiagnosticContext())")
+    }
+
+    /// Collapses immediate child folders first. A second collapse closes this
+    /// folder after every child folder is already collapsed.
+    private func collapseFolderOneLevel(_ folderID: String, in tree: CanvasTree) {
+        let childFolderIDs = tree.childFolderIDs(of: folderID)
+        let expandedChildFolderIDs = childFolderIDs.subtracting(collapsedFolderIDs)
+        AppLog.info(
+            "canvas",
+            "CANVAS_FOLDER_COLLAPSE_STEP id=\(folderID) expandedChildren=\(expandedChildFolderIDs.count) \(canvasDiagnosticContext())"
+        )
+
+        withAnimation(.easeInOut(duration: 0.2)) {
+            if expandedChildFolderIDs.isEmpty {
+                _ = collapsedFolderIDs.insert(folderID)
+            } else {
+                collapsedFolderIDs.formUnion(expandedChildFolderIDs)
+            }
+        }
+    }
+
+    /// Reveals direct children only. Once a folder is open, each invocation
+    /// expands its collapsed child folders by one further level.
+    private func expandFolderOneLevel(_ folderID: String, in tree: CanvasTree) {
+        let childFolderIDs = tree.childFolderIDs(of: folderID)
+        AppLog.info(
+            "canvas",
+            "CANVAS_FOLDER_EXPAND_STEP id=\(folderID) childFolders=\(childFolderIDs.count) wasCollapsed=\(collapsedFolderIDs.contains(folderID)) \(canvasDiagnosticContext())"
+        )
+
+        withAnimation(.easeInOut(duration: 0.2)) {
+            if collapsedFolderIDs.contains(folderID) {
+                _ = collapsedFolderIDs.remove(folderID)
+                collapsedFolderIDs.formUnion(tree.descendantFolderIDs(of: folderID))
+                return
+            }
+
+            let collapsedChildFolderIDs = childFolderIDs.intersection(collapsedFolderIDs)
+            for childFolderID in collapsedChildFolderIDs {
+                _ = collapsedFolderIDs.remove(childFolderID)
+                collapsedFolderIDs.formUnion(tree.descendantFolderIDs(of: childFolderID))
+            }
+        }
+    }
+
+    private func collapseAllFolders(in tree: CanvasTree) {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            collapsedFolderIDs = Set(tree.nodes.lazy.filter(\.isFolder).map(\.id))
+            focusedNodeID = tree.nodes.first?.id
+        }
+    }
+
+    private func expandAllFolders() {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            collapsedFolderIDs.removeAll()
+        }
     }
 
     /// Zoom that frames `board` inside `viewport` with a small ocean margin.
@@ -447,6 +565,7 @@ public struct ChangeCanvasView: View {
     }
 
     private func open(_ file: DiffFile) {
+        AppLog.info("canvas", "CANVAS_FILE_OPEN path=\(file.path) \(canvasDiagnosticContext())")
         store.select(filePath: file.path)
         showCanvas = false
     }
@@ -458,6 +577,17 @@ public struct ChangeCanvasView: View {
     private func canvasAccessibilityLabel(for file: DiffFile) -> String {
         let viewed = fileIsViewed(file) ? ", viewed" : ""
         return "\(file.path), \(file.additions) additions, \(file.deletions) deletions\(viewed)"
+    }
+
+    private func canvasDiagnosticContext() -> String {
+        let viewport = viewportSize.map(String.init(describing:)) ?? "nil"
+        let board = boardSize.map(String.init(describing:)) ?? "nil"
+        return "zoom=\(zoom) pinching=\(pinchStartZoom != nil) viewport=\(viewport) board=\(board) collapsed=\(collapsedFolderIDs.count) focused=\(focusedNodeID ?? "nil")"
+    }
+
+    private func targetsThisStore(_ note: Notification) -> Bool {
+        guard let target = note.object as? ReviewSessionStore else { return true }
+        return target === store
     }
 }
 
@@ -566,6 +696,140 @@ struct CanvasTree: Equatable {
             subtreeFileCounts: subtreeCounts
         )
     }
+
+    /// Folder IDs that are direct children of `nodeID`.
+    func childFolderIDs(of nodeID: String) -> Set<String> {
+        guard let parentIndex = nodes.firstIndex(where: { $0.id == nodeID }) else {
+            return []
+        }
+        return Set(nodes.enumerated().compactMap { index, node in
+            parents[index] == parentIndex && node.isFolder ? node.id : nil
+        })
+    }
+
+    /// Folder IDs below `nodeID`, excluding the node itself.
+    func descendantFolderIDs(of nodeID: String) -> Set<String> {
+        guard let rootIndex = nodes.firstIndex(where: { $0.id == nodeID }) else {
+            return []
+        }
+
+        var children: [[Int]] = Array(repeating: [], count: nodes.count)
+        for (index, parent) in parents.enumerated() {
+            if let parent {
+                children[parent].append(index)
+            }
+        }
+
+        var descendantIDs: Set<String> = []
+        func collect(_ index: Int) {
+            for child in children[index] {
+                if nodes[child].isFolder {
+                    descendantIDs.insert(nodes[child].id)
+                }
+                collect(child)
+            }
+        }
+        collect(rootIndex)
+        return descendantIDs
+    }
+
+    /// Returns a layout-ready tree that retains each collapsed folder but hides
+    /// all of its descendants. Stored subtree counts stay attached to the
+    /// folder so its chip can still show the total changed files it contains.
+    func hidingDescendants(of collapsedNodeIDs: Set<String>) -> CanvasTree {
+        guard !collapsedNodeIDs.isEmpty else { return self }
+
+        var children: [[Int]] = Array(repeating: [], count: nodes.count)
+        for (index, parent) in parents.enumerated() {
+            if let parent {
+                children[parent].append(index)
+            }
+        }
+
+        var visibleNodes: [Node] = []
+        var visibleParents: [Int?] = []
+        var visibleDepths: [Int] = []
+        var visibleSubtreeCounts: [Int] = []
+
+        func visit(_ sourceIndex: Int, parentIndex: Int?, depth: Int) {
+            let visibleIndex = visibleNodes.count
+            visibleNodes.append(nodes[sourceIndex])
+            visibleParents.append(parentIndex)
+            visibleDepths.append(depth)
+            visibleSubtreeCounts.append(subtreeFileCounts[sourceIndex])
+
+            guard !collapsedNodeIDs.contains(nodes[sourceIndex].id) else { return }
+            for child in children[sourceIndex] {
+                visit(child, parentIndex: visibleIndex, depth: depth + 1)
+            }
+        }
+
+        visit(0, parentIndex: nil, depth: 0)
+        return CanvasTree(
+            nodes: visibleNodes,
+            parents: visibleParents,
+            depths: visibleDepths,
+            subtreeFileCounts: visibleSubtreeCounts
+        )
+    }
+}
+
+// MARK: - Tree keyboard navigation
+
+/// Directions supported by the canvas's arrow-key node navigation.
+enum CanvasNodeDirection: CustomStringConvertible {
+    case up
+    case down
+    case left
+    case right
+
+    var description: String {
+        switch self {
+        case .up: return "up"
+        case .down: return "down"
+        case .left: return "left"
+        case .right: return "right"
+        }
+    }
+}
+
+/// Resolves arrow-key destinations from the visible tree and its plan. Left
+/// and right follow hierarchy; up and down stay in the current depth column
+/// and follow its visual reading order.
+enum CanvasNodeNavigator {
+    static func nextNodeID(
+        from currentNodeID: String?,
+        direction: CanvasNodeDirection,
+        tree: CanvasTree,
+        plan: TreePlan
+    ) -> String? {
+        guard !tree.nodes.isEmpty else { return nil }
+        guard let currentNodeID,
+              let currentIndex = tree.nodes.firstIndex(where: { $0.id == currentNodeID }) else {
+            return tree.nodes.first?.id
+        }
+
+        switch direction {
+        case .left:
+            guard let parentIndex = tree.parents[currentIndex] else { return nil }
+            return tree.nodes[parentIndex].id
+        case .right:
+            guard let childIndex = tree.parents.firstIndex(of: currentIndex) else { return nil }
+            return tree.nodes[childIndex].id
+        case .up, .down:
+            let currentDepth = tree.depths[currentIndex]
+            let visualOrder = tree.nodes.indices
+                .filter { tree.depths[$0] == currentDepth }
+                .sorted { plan.frames[$0].midY < plan.frames[$1].midY }
+            guard let position = visualOrder.firstIndex(of: currentIndex) else { return nil }
+            let destination: Int? = switch direction {
+            case .up: visualOrder.index(position, offsetBy: -1, limitedBy: visualOrder.startIndex)
+            case .down: visualOrder.index(position, offsetBy: 1, limitedBy: visualOrder.endIndex - 1)
+            case .left, .right: nil
+            }
+            return destination.map { tree.nodes[visualOrder[$0]].id }
+        }
+    }
 }
 
 // MARK: - Tree geometry
@@ -620,18 +884,9 @@ struct TreePlan {
             }
         }
 
-        // Subtree height bottom-up (children appear after their parent in the
-        // pre-order flattening, so reverse iteration visits them first).
-        var subtreeHeight = sizes.map(\.height)
-        for index in stride(from: count - 1, through: 0, by: -1) {
-            guard !children[index].isEmpty else { continue }
-            let span = children[index].reduce(CGFloat(0)) { $0 + subtreeHeight[$1] }
-                + CGFloat(max(children[index].count - 1, 0)) * rowGap
-            subtreeHeight[index] = max(sizes[index].height, span)
-        }
-
         // Top-down placement: leaves start at the cursor; a parent is centered
-        // over the span of its children.
+        // over the span of its children. Consecutive siblings get `rowGap`,
+        // preventing file chips from appearing as one uninterrupted strip.
         var nodeY: [CGFloat] = Array(repeating: 0, count: count)
         func assignY(_ index: Int, minY: CGFloat) -> CGFloat {
             let own = sizes[index].height
@@ -640,8 +895,11 @@ struct TreePlan {
                 return minY + own
             }
             var cursor = minY
-            for child in children[index] {
+            for (childOffset, child) in children[index].enumerated() {
                 cursor = assignY(child, minY: cursor)
+                if childOffset < children[index].count - 1 {
+                    cursor += rowGap
+                }
             }
             let span = cursor - minY
             nodeY[index] = minY + span / 2 - own / 2
@@ -706,37 +964,42 @@ private enum TreeMetrics {
 
 // MARK: - Chips
 
-/// A folder node: icon, name, and the number of changed files in its subtree.
+/// A folder node: disclosure state, icon, name, and changed-file count.
 private struct TreeFolderChip: View {
     let node: CanvasTree.Node
     let descendantFileCount: Int
+    let isCollapsed: Bool
+    let zoom: CGFloat
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 8 * zoom) {
+            Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                .font(.system(size: 10 * zoom, weight: .bold))
+                .foregroundStyle(.secondary)
+                .frame(width: 10 * zoom)
             Image(systemName: "folder.fill")
-                .font(.system(size: 12, weight: .semibold))
+                .font(.system(size: 12 * zoom, weight: .semibold))
                 .foregroundStyle(.orange)
             Text(node.name)
-                .font(.system(size: 12, weight: .semibold))
+                .font(.system(size: 12 * zoom, weight: .semibold))
                 .lineLimit(1)
                 .truncationMode(.middle)
-            Spacer(minLength: 4)
+            Spacer(minLength: 4 * zoom)
             Text("\(descendantFileCount)")
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
-                .padding(.horizontal, 6)
-                .padding(.vertical, 1)
+                .font(.system(size: 10 * zoom, weight: .bold, design: .monospaced))
+                .padding(.horizontal, 6 * zoom)
+                .padding(.vertical, zoom)
                 .background(Color.primary.opacity(0.08), in: Capsule())
         }
-        .padding(.horizontal, 12)
-        .frame(width: TreeMetrics.folderWidth, height: TreeMetrics.folderHeight)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+        .padding(.horizontal, 12 * zoom)
+        .frame(width: TreeMetrics.folderWidth * zoom, height: TreeMetrics.folderHeight * zoom)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10 * zoom))
         .overlay {
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(Color.orange.opacity(0.35), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 10 * zoom)
+                .stroke(Color.orange.opacity(0.35), lineWidth: max(zoom, 0.5))
         }
-        .shadow(color: Color.black.opacity(0.07), radius: 4, y: 2)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(node.name), folder, \(descendantFileCount) \(descendantFileCount == 1 ? "file" : "files")")
+        .shadow(color: Color.black.opacity(0.07), radius: 4 * zoom, y: 2 * zoom)
+        .contentShape(RoundedRectangle(cornerRadius: 10 * zoom))
     }
 }
 
@@ -746,40 +1009,42 @@ private struct TreeFolderChip: View {
 private struct TreeFileChip: View {
     @ObservedObject var store: ReviewSessionStore
     let file: DiffFile
+    let zoom: CGFloat
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 8 * zoom) {
             Text(file.status.letter)
-                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                .font(.system(size: 11 * zoom, weight: .bold, design: .monospaced))
                 .foregroundStyle(statusColor)
-                .frame(width: 18, height: 18)
-                .background(statusColor.opacity(0.13), in: RoundedRectangle(cornerRadius: 4))
+                .frame(width: 18 * zoom, height: 18 * zoom)
+                .background(statusColor.opacity(0.13), in: RoundedRectangle(cornerRadius: 4 * zoom))
 
             Text(fileName)
-                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                .font(.system(size: 12 * zoom, weight: .semibold, design: .monospaced))
                 .lineLimit(1)
                 .truncationMode(.middle)
 
-            Spacer(minLength: 4)
+            Spacer(minLength: 4 * zoom)
 
             Text("+\(file.additions) −\(file.deletions)")
-                .font(.system(size: 10, design: .monospaced))
+                .font(.system(size: 10 * zoom, design: .monospaced))
                 .foregroundStyle(.secondary)
 
             if fileIsViewed {
                 Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 12 * zoom))
                     .foregroundStyle(.green)
             }
         }
-        .padding(.horizontal, 10)
-        .frame(width: TreeMetrics.fileWidth, height: TreeMetrics.fileHeight)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 9))
+        .padding(.horizontal, 10 * zoom)
+        .frame(width: TreeMetrics.fileWidth * zoom, height: TreeMetrics.fileHeight * zoom)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 9 * zoom))
         .overlay {
-            RoundedRectangle(cornerRadius: 9)
-                .stroke(borderColor, lineWidth: isSelected ? 2 : 1)
+            RoundedRectangle(cornerRadius: 9 * zoom)
+                .stroke(borderColor, lineWidth: (isSelected ? 2 : 1) * zoom)
         }
-        .shadow(color: Color.black.opacity(0.07), radius: 4, y: 2)
-        .contentShape(RoundedRectangle(cornerRadius: 9))
+        .shadow(color: Color.black.opacity(0.07), radius: 4 * zoom, y: 2 * zoom)
+        .contentShape(RoundedRectangle(cornerRadius: 9 * zoom))
     }
 
     private var fileName: String {
@@ -824,72 +1089,40 @@ private struct CanvasBoardSizeKey: PreferenceKey {
     }
 }
 
-private enum MapPalette {
-    static func seaTop(_ scheme: ColorScheme) -> Color {
-        scheme == .dark
-            ? Color(red: 0.10, green: 0.19, blue: 0.27)
-            : Color(red: 0.83, green: 0.90, blue: 0.95)
-    }
-
-    static func seaBottom(_ scheme: ColorScheme) -> Color {
-        scheme == .dark
-            ? Color(red: 0.06, green: 0.12, blue: 0.20)
-            : Color(red: 0.72, green: 0.83, blue: 0.92)
-    }
-
-    static func wave(_ scheme: ColorScheme) -> Color {
-        scheme == .dark
-            ? Color(red: 0.45, green: 0.68, blue: 0.87).opacity(0.22)
-            : Color(red: 0.30, green: 0.52, blue: 0.70).opacity(0.26)
-    }
-}
-
-/// Sizes the scroll document to the zoomed board. `scaleEffect` only changes
-/// rendering, not layout, so without this wrapper the scroll view would think
-/// the board is its unscaled size. Measuring here, synchronously in the same
-/// layout pass, avoids the asynchronous preference that previously left the
-/// document at (or below) the viewport height and killed trackpad scrolling.
-private struct CanvasZoomLayout: Layout {
-    var zoom: CGFloat
-
-    struct Cache {
-        var invocationID: Int = 0
-    }
-
-    func makeCache(subviews: Subviews) -> Cache {
-        Cache()
-    }
+/// Places nodes at their scaled `TreePlan` frames during layout. Buttons are
+/// never visually transformed after layout, so the scroll view and hit testing
+/// share the same geometry.
+private struct CanvasTreeLayout: Layout {
+    let frames: [CGRect]
 
     func sizeThatFits(
         proposal: ProposedViewSize,
         subviews: Subviews,
-        cache: inout Cache
+        cache: inout Void
     ) -> CGSize {
-        cache.invocationID += 1
-        let start = CFAbsoluteTimeGetCurrent()
-        let raw = subviews[0].sizeThatFits(.unspecified)
-        let measureElapsed = CFAbsoluteTimeGetCurrent() - start
-        let z = max(zoom, 0.01)
-        let size = CGSize(
-            width: max(raw.width * z, proposal.width ?? raw.width * z),
-            height: max(raw.height * z, proposal.height ?? raw.height * z)
+        let requiredSize = frames.reduce(into: CGSize.zero) { size, frame in
+            size.width = max(size.width, frame.maxX)
+            size.height = max(size.height, frame.maxY)
+        }
+        return CGSize(
+            width: proposal.width ?? requiredSize.width,
+            height: proposal.height ?? requiredSize.height
         )
-        let totalElapsed = CFAbsoluteTimeGetCurrent() - start
-        AppLog.info("canvas", "CANVAS_METRIC fit #\(cache.invocationID) proposal=(\(proposal.width.map(String.init) ?? "nil"), \(proposal.height.map(String.init) ?? "nil")) zoom=\(zoom) raw=\(raw) size=\(size) measureMs=\(Int(measureElapsed * 1000)) fitMs=\(Int(totalElapsed * 1000))")
-        return size
     }
 
     func placeSubviews(
         in bounds: CGRect,
         proposal: ProposedViewSize,
         subviews: Subviews,
-        cache: inout Cache
+        cache: inout Void
     ) {
-        let start = CFAbsoluteTimeGetCurrent()
-        // The child lays out at its unscaled size; the scaleEffect anchored at
-        // .topLeading scales it to fill the zoomed document bounds exactly.
-        subviews[0].place(at: bounds.origin, anchor: .topLeading, proposal: .unspecified)
-        let elapsed = CFAbsoluteTimeGetCurrent() - start
-        AppLog.info("canvas", "CANVAS_METRIC place bounds=\(bounds.size) ms=\(Int(elapsed * 1000))")
+        for (index, subview) in subviews.enumerated() where frames.indices.contains(index) {
+            let frame = frames[index]
+            subview.place(
+                at: CGPoint(x: bounds.minX + frame.midX, y: bounds.minY + frame.midY),
+                anchor: .center,
+                proposal: ProposedViewSize(frame.size)
+            )
+        }
     }
 }

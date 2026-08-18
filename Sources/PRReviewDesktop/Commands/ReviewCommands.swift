@@ -137,6 +137,46 @@ public struct ReviewCommands: Commands {
             }
             .keyboardShortcut("0", modifiers: .command)
             .disabled(focusedStore == nil)
+
+            Divider()
+
+            Button("Collapse Focused Folder One Level") {
+                NotificationCenter.default.post(
+                    name: .reviewCanvasCollapseFolderRequest,
+                    object: focusedStore
+                )
+            }
+            .keyboardShortcut(.leftArrow, modifiers: [.command, .control])
+            .disabled(focusedStore == nil)
+
+            Button("Expand Focused Folder One Level") {
+                NotificationCenter.default.post(
+                    name: .reviewCanvasExpandFolderRequest,
+                    object: focusedStore
+                )
+            }
+            .keyboardShortcut(.rightArrow, modifiers: [.command, .control])
+            .disabled(focusedStore == nil)
+
+            Divider()
+
+            Button("Collapse All Folders") {
+                NotificationCenter.default.post(
+                    name: .reviewCanvasCollapseAllFoldersRequest,
+                    object: focusedStore
+                )
+            }
+            .keyboardShortcut(.leftArrow, modifiers: [.command, .control, .option])
+            .disabled(focusedStore == nil)
+
+            Button("Expand All Folders") {
+                NotificationCenter.default.post(
+                    name: .reviewCanvasExpandAllFoldersRequest,
+                    object: focusedStore
+                )
+            }
+            .keyboardShortcut(.rightArrow, modifiers: [.command, .control, .option])
+            .disabled(focusedStore == nil)
         }
 
         CommandMenu("Navigate") {
@@ -210,6 +250,10 @@ public extension Notification.Name {
     static let reviewCanvasZoomInRequest = Notification.Name("review.canvasZoomIn")
     static let reviewCanvasZoomOutRequest = Notification.Name("review.canvasZoomOut")
     static let reviewCanvasResetZoomRequest = Notification.Name("review.canvasResetZoom")
+    static let reviewCanvasCollapseFolderRequest = Notification.Name("review.canvasCollapseFolder")
+    static let reviewCanvasExpandFolderRequest = Notification.Name("review.canvasExpandFolder")
+    static let reviewCanvasCollapseAllFoldersRequest = Notification.Name("review.canvasCollapseAllFolders")
+    static let reviewCanvasExpandAllFoldersRequest = Notification.Name("review.canvasExpandAllFolders")
     static let reviewPreviousFileRequest = Notification.Name("review.previousFile")
     static let reviewNextFileRequest = Notification.Name("review.nextFile")
     static let reviewPreviousHunkRequest = Notification.Name("review.previousHunk")
