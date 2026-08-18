@@ -136,19 +136,19 @@ public struct ChangeCanvasView: View {
                 focusedNodeID = nil
             }
             .onReceive(NotificationCenter.default.publisher(for: .reviewCanvasCollapseFolderRequest)) { note in
-                guard targetsThisStore(note) else { return }
+                guard showCanvas, targetsThisStore(note) else { return }
                 collapseFocusedFolder(in: CanvasTree.build(from: files))
             }
             .onReceive(NotificationCenter.default.publisher(for: .reviewCanvasExpandFolderRequest)) { note in
-                guard targetsThisStore(note) else { return }
+                guard showCanvas, targetsThisStore(note) else { return }
                 expandFocusedFolder(in: CanvasTree.build(from: files))
             }
             .onReceive(NotificationCenter.default.publisher(for: .reviewCanvasCollapseAllFoldersRequest)) { note in
-                guard targetsThisStore(note) else { return }
+                guard showCanvas, targetsThisStore(note) else { return }
                 collapseAllFolders(in: CanvasTree.build(from: files))
             }
             .onReceive(NotificationCenter.default.publisher(for: .reviewCanvasExpandAllFoldersRequest)) { note in
-                guard targetsThisStore(note) else { return }
+                guard showCanvas, targetsThisStore(note) else { return }
                 expandAllFolders()
             }
         }
@@ -301,6 +301,7 @@ public struct ChangeCanvasView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onMoveCommand { direction in
+            guard showCanvas else { return }
             let tree = CanvasTree.build(from: files)
                 .hidingDescendants(of: collapsedFolderIDs)
             let plan = treePlan(for: tree)
