@@ -175,6 +175,25 @@ final class CanvasTreeTests: XCTestCase {
         )
     }
 
+    func testKeyboardNavigationMovesVerticallyAcrossDepthColumns() {
+        let tree = CanvasTree.build(from: [
+            file("Sources/App/Engine.swift"),
+            file("README.md"),
+        ])
+        let treePlan = plan(tree: tree)
+
+        // The root has no same-depth peer, but Down must still leave it.
+        let nextNodeID = CanvasNodeNavigator.nextNodeID(
+            from: tree.nodes[0].id,
+            direction: .down,
+            tree: tree,
+            plan: treePlan
+        )
+
+        XCTAssertNotNil(nextNodeID)
+        XCTAssertNotEqual(nextNodeID, tree.nodes[0].id)
+    }
+
     // MARK: - Plan geometry
 
     private func plan(

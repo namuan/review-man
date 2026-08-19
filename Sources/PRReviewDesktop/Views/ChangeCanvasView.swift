@@ -300,25 +300,6 @@ public struct ChangeCanvasView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .onMoveCommand { direction in
-            guard showCanvas else { return }
-            let tree = CanvasTree.build(from: files)
-                .hidingDescendants(of: collapsedFolderIDs)
-            let plan = treePlan(for: tree)
-
-            switch direction {
-            case .up:
-                moveCanvasFocus(.up, in: tree, plan: plan)
-            case .down:
-                moveCanvasFocus(.down, in: tree, plan: plan)
-            case .left:
-                moveCanvasFocus(.left, in: tree, plan: plan)
-            case .right:
-                moveCanvasFocus(.right, in: tree, plan: plan)
-            default:
-                break
-            }
-        }
     }
 
     /// Node sizes are fixed by kind (folder chip vs file chip), so the plan
@@ -364,6 +345,7 @@ public struct ChangeCanvasView: View {
             .accessibilityIdentifier("canvas-folder-\(node.path)")
             .accessibilityLabel("\(isCollapsed ? "Expand" : "Collapse") \(node.name) folder, \(descendantFileCount) \(descendantFileCount == 1 ? "file" : "files")")
             .focused($focusedNodeID, equals: node.id)
+            .onMoveCommand(perform: handleCanvasMove)
         } else if let file = node.file {
             Button {
                 focusedNodeID = node.id
@@ -382,6 +364,7 @@ public struct ChangeCanvasView: View {
             .accessibilityIdentifier("canvas-file-\(file.path)")
             .accessibilityLabel(canvasAccessibilityLabel(for: file))
             .focused($focusedNodeID, equals: node.id)
+            .onMoveCommand(perform: handleCanvasMove)
         }
     }
 
@@ -458,6 +441,28 @@ public struct ChangeCanvasView: View {
             return
         }
         expandFolderOneLevel(folderID, in: tree)
+    }
+
+    /// Install this on each focusable chip rather than its ScrollView parent:
+    /// the native button is the first responder after a node is clicked.
+    private func handleCanvasMove(_ direction: MoveCommandDirection) {
+        guard showCanvas else { return }
+        let tree = CanvasTree.build(from: files)
+            .hidingDescendants(of: collapsedFolderIDs)
+        let plan = treePlan(for: tree)
+
+        switch direction {
+        case .up:
+            moveCanvasFocus(.up, in: tree, plan: plan)
+        case .down:
+            moveCanvasFocus(.down, in: tree, plan: plan)
+        case .left:
+            moveCanvasFocus(.left, in: tree, plan: plan)
+        case .right:
+            moveCanvasFocus(.right, in: tree, plan: plan)
+        default:
+            break
+        }
     }
 
     private func moveCanvasFocus(
@@ -794,8 +799,8 @@ enum CanvasNodeDirection: CustomStringConvertible {
 }
 
 /// Resolves arrow-key destinations from the visible tree and its plan. Left
-/// and right follow hierarchy; up and down stay in the current depth column
-/// and follow its visual reading order.
+/// and right follow hierarchy; up and down prefer the current depth column,
+/// then fall back to the nearest visible node when that column has no peer.
 enum CanvasNodeNavigator {
     static func nextNodeID(
         from currentNodeID: String?,
@@ -817,17 +822,38 @@ enum CanvasNodeNavigator {
             guard let childIndex = tree.parents.firstIndex(of: currentIndex) else { return nil }
             return tree.nodes[childIndex].id
         case .up, .down:
-            let currentDepth = tree.depths[currentIndex]
-            let visualOrder = tree.nodes.indices
-                .filter { tree.depths[$0] == currentDepth }
-                .sorted { plan.frames[$0].midY < plan.frames[$1].midY }
-            guard let position = visualOrder.firstIndex(of: currentIndex) else { return nil }
-            let destination: Int? = switch direction {
-            case .up: visualOrder.index(position, offsetBy: -1, limitedBy: visualOrder.startIndex)
-            case .down: visualOrder.index(position, offsetBy: 1, limitedBy: visualOrder.endIndex - 1)
-            case .left, .right: nil
+            let currentFrame = plan.frames[currentIndex]
+            let verticalCandidates = tree.nodes.indices.filter { index in
+                switch direction {
+                case .up: return plan.frames[index].midY < currentFrame.midY
+                case .down: return plan.frames[index].midY > currentFrame.midY
+                case .left, .right: return false
+                }
             }
-            return destination.map { tree.nodes[visualOrder[$0]].id }
+            let sameColumnCandidates = verticalCandidates.filter {
+                tree.depths[$0] == tree.depths[currentIndex]
+            }
+            // A single straight branch can have every node on the same row.
+            // Fall back to that row's visual order so arrow navigation never
+            // traps focus on an otherwise navigable canvas.
+            let candidates: [Int]
+            if !sameColumnCandidates.isEmpty {
+                candidates = sameColumnCandidates
+            } else if !verticalCandidates.isEmpty {
+                candidates = verticalCandidates
+            } else {
+                candidates = tree.nodes.indices.filter { $0 != currentIndex }
+            }
+            let destination = candidates.min { lhs, rhs in
+                let lhsVerticalDistance = abs(plan.frames[lhs].midY - currentFrame.midY)
+                let rhsVerticalDistance = abs(plan.frames[rhs].midY - currentFrame.midY)
+                if lhsVerticalDistance != rhsVerticalDistance {
+                    return lhsVerticalDistance < rhsVerticalDistance
+                }
+                return abs(plan.frames[lhs].midX - currentFrame.midX)
+                    < abs(plan.frames[rhs].midX - currentFrame.midX)
+            }
+            return destination.map { tree.nodes[$0].id }
         }
     }
 }
