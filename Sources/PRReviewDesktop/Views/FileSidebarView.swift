@@ -245,6 +245,14 @@ private struct SidebarFileTreeRow: View {
             Image(systemName: folderExpansion.wrappedValue ? "folder.fill" : "folder")
                 .foregroundStyle(.secondary)
         }
+        // AppKit's DisclosureGroup only toggles from its disclosure indicator.
+        // Make the entire visible folder label provide the same action.
+        .contentShape(Rectangle())
+        .onTapGesture(perform: toggleFolderExpansion)
+    }
+
+    private func toggleFolderExpansion() {
+        folderExpansion.wrappedValue.toggle()
     }
 }
 
