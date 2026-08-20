@@ -805,25 +805,33 @@ public extension ReviewSessionStore {
 
     /// Cancels the most relevant transient interaction: draft editor, reply
     /// editor, submit sheet (retaining uncertain behavior for in-flight
-    /// submissions), loading, then the banner.
-    func cancelTransientInteraction() {
+    /// submissions), loading, then the banner. Returns true when an
+    /// interaction was cancelled; false when nothing needed dismissing
+    /// (callers can then treat Escape as a mode switch, e.g. returning to
+    /// the change canvas from a focused diff).
+    @discardableResult
+    func cancelTransientInteraction() -> Bool {
         if draftEditor != nil {
             cancelDraftEditor()
-            return
+            return true
         }
         if !replyEditors.isEmpty {
             replyEditors = [:]
-            return
+            return true
         }
         if submitState != .hidden {
             cancelSubmit()
-            return
+            return true
         }
         if case .loading = state {
             cancelLoad()
-            return
+            return true
         }
-        banner = nil
+        if banner != nil {
+            banner = nil
+            return true
+        }
+        return false
     }
 }
 

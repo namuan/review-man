@@ -254,6 +254,7 @@ public extension Notification.Name {
     static let reviewCanvasExpandFolderRequest = Notification.Name("review.canvasExpandFolder")
     static let reviewCanvasCollapseAllFoldersRequest = Notification.Name("review.canvasCollapseAllFolders")
     static let reviewCanvasExpandAllFoldersRequest = Notification.Name("review.canvasExpandAllFolders")
+    static let reviewReturnToCanvasRequest = Notification.Name("review.returnToCanvas")
     static let reviewPreviousFileRequest = Notification.Name("review.previousFile")
     static let reviewNextFileRequest = Notification.Name("review.nextFile")
     static let reviewPreviousHunkRequest = Notification.Name("review.previousHunk")

@@ -88,7 +88,21 @@ public struct ReviewWindowView: View {
             SubmitReviewView(store: store)
         }
         .onExitCommand {
-            store.cancelTransientInteraction()
+            let cancelled = store.cancelTransientInteraction()
+            // Nothing transient left to dismiss: Escape returns from the
+            // focused diff to the change canvas. Zoom, collapsed folders,
+            // and keyboard focus survive because the canvas stays mounted
+            // (hidden) while the diff is shown.
+            if !cancelled, !showCanvas {
+                showCanvas = true
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .reviewReturnToCanvasRequest)) { note in
+            // The AppKit diff surface swallows Escape in keyDown; it asks the
+            // window to return to the canvas once no transient interaction
+            // needed dismissing.
+            guard matches(note) else { return }
+            showCanvas = true
         }
     }
 

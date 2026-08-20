@@ -138,13 +138,18 @@ final class ReviewCommandTests: XCTestCase {
         // Draft editor first.
         store.beginDraft(at: DraftStartAnchor(path: "Src.swift", side: "RIGHT", line: 2))
         XCTAssertNotNil(store.draftEditor)
-        store.cancelTransientInteraction()
+        XCTAssertTrue(store.cancelTransientInteraction())
         XCTAssertNil(store.draftEditor, "Escape cancels the draft editor first")
 
         // Then the banner.
         store.banner = SessionBanner(text: "hi", isError: false)
-        store.cancelTransientInteraction()
+        XCTAssertTrue(store.cancelTransientInteraction())
         XCTAssertNil(store.banner, "Escape dismisses the banner")
+
+        XCTAssertFalse(
+            store.cancelTransientInteraction(),
+            "Escape reports nothing to cancel so views can switch modes"
+        )
     }
 
     // MARK: - Undo history cleared on load

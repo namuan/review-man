@@ -635,7 +635,12 @@ private final class AppKitDiffSurfaceNSView: NSView {
         case 119: // end
             selectBoundary(first: false, store: store)
         case 53: // escape
-            store.cancelTransientInteraction()
+            if !store.cancelTransientInteraction() {
+                NotificationCenter.default.post(
+                    name: .reviewReturnToCanvasRequest,
+                    object: store
+                )
+            }
         default:
             super.keyDown(with: event)
         }
