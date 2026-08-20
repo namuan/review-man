@@ -67,6 +67,10 @@ public struct ChangeCanvasView: View {
     /// Weak handle to the invisible first-responder bridge embedded in the
     /// canvas scroll hierarchy (see `CanvasFocusBridge`).
     @State private var focusTarget = CanvasFocusTarget()
+    /// ScrollViewReader proxy captured on appear, used to bring the focused
+    /// chip into the viewport (the canvas stays mounted while a diff is shown,
+    /// so the proxy remains valid).
+    @State private var scrollProxy: ScrollViewProxy?
     /// Folder IDs whose descendants are currently hidden from the canvas.
     @State private var collapsedFolderIDs: Set<String> = []
     /// The node currently selected for arrow-key navigation.
@@ -299,37 +303,46 @@ public struct ChangeCanvasView: View {
             )
         }
 
-        return ScrollView([.horizontal, .vertical], showsIndicators: true) {
-            // Use real scaled layout geometry rather than scaleEffect. The
-            // transform left SwiftUI's button hit regions stale after a tree
-            // reflow until another zoom forced a new hit-test map.
-            CanvasTreeLayout(frames: nodeFrames) {
-                ForEach(Array(tree.nodes.enumerated()), id: \.element.id) { index, node in
-                    treeNodeView(
-                        node: node,
-                        descendantFileCount: tree.subtreeFileCounts[index],
-                        zoom: zoom
-                    )
+        return ScrollViewReader { proxy in
+            ScrollView([.horizontal, .vertical], showsIndicators: true) {
+                // Use real scaled layout geometry rather than scaleEffect. The
+                // transform left SwiftUI's button hit regions stale after a tree
+                // reflow until another zoom forced a new hit-test map.
+                CanvasTreeLayout(frames: nodeFrames) {
+                    ForEach(Array(tree.nodes.enumerated()), id: \.element.id) { index, node in
+                        treeNodeView(
+                            node: node,
+                            descendantFileCount: tree.subtreeFileCounts[index],
+                            zoom: zoom
+                        )
+                        .id(canvasScrollID(node.id))
+                    }
+                }
+                .frame(width: boardSize.width, height: boardSize.height)
+                .background(treeConnectors(plan: plan, zoom: zoom))
+                .background {
+                    // Fit uses the unscaled plan, independently of the rendered
+                    // document's current zoom.
+                    Color.clear.preference(key: CanvasBoardSizeKey.self, value: plan.boardSize)
                 }
             }
-            .frame(width: boardSize.width, height: boardSize.height)
-            .background(treeConnectors(plan: plan, zoom: zoom))
+            // Invisible first-responder anchor for the whole canvas. SwiftUI's
+            // FocusState cannot re-engage the AppKit responder chain once the
+            // canvas returns from being disabled; restoring this view as the
+            // window's first responder routes arrow keys back into SwiftUI's
+            // focus engine, which re-applies the stored chip focus.
             .background {
-                // Fit uses the unscaled plan, independently of the rendered
-                // document's current zoom.
-                Color.clear.preference(key: CanvasBoardSizeKey.self, value: plan.boardSize)
+                CanvasFocusBridge(target: focusTarget)
+                    .allowsHitTesting(false)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            // Capture the proxy once the canvas appears so navigation can keep
+            // the focused chip in view (arrow moves, return from a diff, and
+            // collapse/expand reflows).
+            .onAppear {
+                scrollProxy = proxy
             }
         }
-        // Invisible first-responder anchor for the whole canvas. SwiftUI's
-        // FocusState cannot re-engage the AppKit responder chain once the
-        // canvas returns from being disabled; restoring this view as the
-        // window's first responder routes arrow keys back into SwiftUI's
-        // focus engine, which re-applies the stored chip focus.
-        .background {
-            CanvasFocusBridge(target: focusTarget)
-                .allowsHitTesting(false)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     /// Node sizes are fixed by kind (folder chip vs file chip), so the plan
@@ -511,7 +524,58 @@ public struct ChangeCanvasView: View {
 
         focusedNodeID = nextNodeID
         lastFocusedNodeID = nextNodeID
+        scrollToNode(nextNodeID)
         AppLog.info("canvas", "CANVAS_KEYBOARD_FOCUS direction=\(direction) id=\(nextNodeID) \(canvasDiagnosticContext())")
+    }
+
+    // MARK: - Keep the focused node in view
+
+    /// Scroll ID registered on each rendered chip so `ScrollViewReader` can
+    /// bring it back into the viewport.
+    private func canvasScrollID(_ nodeID: String) -> String {
+        "canvas-scroll:\(nodeID)"
+    }
+
+    /// Scrolls the viewport so `nodeID` — or its nearest visible ancestor when
+    /// a collapse hides it — is centered on screen. Respects Reduce Motion,
+    /// mirroring the diff pane's scroll behavior.
+    private func scrollToNode(_ nodeID: String?) {
+        guard let proxy = scrollProxy else { return }
+        guard let target = CanvasReveal.resolvedVisibleTarget(
+            for: nodeID ?? lastFocusedNodeID,
+            collapsedFolderIDs: collapsedFolderIDs
+        ) else { return }
+        let scrollID = canvasScrollID(target)
+        if AppearanceSettings.reduceMotion {
+            proxy.scrollTo(scrollID, anchor: .center)
+        } else {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                proxy.scrollTo(scrollID, anchor: .center)
+            }
+        }
+    }
+
+    /// After a collapse/expand the tree reflows, so the focused chip (or its
+    /// representative folder) can drift out of view. Redirects focus when a
+    /// collapse hid the focused node, then reveals it once the new layout has
+    /// had a run-loop turn to place its frames.
+    private func revealFocusedNodeAfterReflow() {
+        DispatchQueue.main.async {
+            if let remembered = lastFocusedNodeID,
+               CanvasReveal.isHiddenByCollapse(
+                   nodeID: remembered,
+                   collapsedFolderIDs: collapsedFolderIDs
+               ),
+               let target = CanvasReveal.resolvedVisibleTarget(
+                   for: remembered,
+                   collapsedFolderIDs: collapsedFolderIDs
+               ) {
+                setCanvasFocus(target)
+                scrollToNode(target)
+                return
+            }
+            scrollToNode(lastFocusedNodeID)
+        }
     }
 
     /// Collapses immediate child folders first. A second collapse closes this
@@ -531,6 +595,7 @@ public struct ChangeCanvasView: View {
                 collapsedFolderIDs.formUnion(expandedChildFolderIDs)
             }
         }
+        revealFocusedNodeAfterReflow()
     }
 
     /// Reveals direct children only. Once a folder is open, each invocation
@@ -555,6 +620,7 @@ public struct ChangeCanvasView: View {
                 collapsedFolderIDs.formUnion(tree.descendantFolderIDs(of: childFolderID))
             }
         }
+        revealFocusedNodeAfterReflow()
     }
 
     private func collapseAllFolders(in tree: CanvasTree) {
@@ -562,12 +628,14 @@ public struct ChangeCanvasView: View {
             collapsedFolderIDs = Set(tree.nodes.lazy.filter(\.isFolder).map(\.id))
             setCanvasFocus(tree.nodes.first?.id)
         }
+        revealFocusedNodeAfterReflow()
     }
 
     private func expandAllFolders() {
         withAnimation(.easeInOut(duration: 0.2)) {
             collapsedFolderIDs.removeAll()
         }
+        revealFocusedNodeAfterReflow()
     }
 
     /// Zoom that frames `board` inside `viewport` with a small ocean margin.
@@ -621,6 +689,10 @@ public struct ChangeCanvasView: View {
             if let view = focusTarget.view, let window = view.window {
                 window.makeFirstResponder(view)
             }
+            // The restored chip may have scrolled off-viewport while the diff
+            // was shown; bring it back into view now that the layout has had a
+            // run-loop turn to place its frames.
+            scrollToNode(targetNodeID)
         }
     }
 
@@ -850,6 +922,70 @@ struct CanvasTree: Equatable {
 }
 
 // MARK: - Tree keyboard navigation
+
+/// Pure logic for resolving which chip handles reveal/focus once folders are
+/// collapsed, independent of the view so it can be unit-tested. Node ids are
+/// "folder:<path>" / "file:<path>" (root folder path is empty).
+/// Collapsing a folder keeps its own chip rendered but drops the descendant
+/// chips, so a node under a collapsed folder must fall back to the nearest
+/// visible folder ancestor.
+enum CanvasReveal {
+    /// The path encoded in a canvas node id ("file:a/b.py" → "a/b.py").
+    static func nodePath(of nodeID: String) -> String? {
+        if nodeID.hasPrefix("file:") {
+            return String(nodeID.dropFirst("file:".count))
+        }
+        if nodeID.hasPrefix("folder:") {
+            return String(nodeID.dropFirst("folder:".count))
+        }
+        return nil
+    }
+
+    /// Folder node id containing `nodeID` in the full tree ("file:a/b.py" →
+    /// "folder:a"). Root-level nodes report the root folder, so a fully
+    /// hidden target never walks past the visible root.
+    static func parentFolderID(of nodeID: String) -> String? {
+        guard let path = nodePath(of: nodeID),
+              let lastSlash = path.lastIndex(of: "/") else {
+            return "folder:"
+        }
+        return "folder:" + path[..<lastSlash]
+    }
+
+    /// Whether a collapse currently hides `nodeID`'s chip. Collapsed folders
+    /// themselves stay rendered; their descendants do not.
+    static func isHiddenByCollapse(nodeID: String, collapsedFolderIDs: Set<String>) -> Bool {
+        guard let path = nodePath(of: nodeID) else { return false }
+        for collapsed in collapsedFolderIDs {
+            guard let foldedPath = nodePath(of: collapsed) else { continue }
+            if foldedPath.isEmpty {
+                // A collapsed root hides every other node; the root itself stays.
+                return !path.isEmpty
+            }
+            if path.hasPrefix(foldedPath + "/") {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// The id to scroll to: `nodeID` itself when it is currently rendered,
+    /// otherwise the nearest folder ancestor that is still visible.
+    static func resolvedVisibleTarget(
+        for nodeID: String?,
+        collapsedFolderIDs: Set<String>
+    ) -> String? {
+        var current = nodeID
+        while let id = current {
+            if !isHiddenByCollapse(nodeID: id, collapsedFolderIDs: collapsedFolderIDs) {
+                return id
+            }
+            guard let parent = parentFolderID(of: id) else { return nil }
+            current = parent
+        }
+        return nil
+    }
+}
 
 /// Directions supported by the canvas's arrow-key node navigation.
 enum CanvasNodeDirection: CustomStringConvertible {

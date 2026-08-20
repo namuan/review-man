@@ -312,4 +312,60 @@ final class CanvasTreeTests: XCTestCase {
             XCTAssertLessThanOrEqual(frame.maxY, plan.boardSize.height - pad + 0.5)
         }
     }
+
+    // MARK: - Reveal/focus resolution across collapses
+
+    func testParentFolderID() {
+        XCTAssertEqual(CanvasReveal.parentFolderID(of: "file:a/b.py"), "folder:a")
+        XCTAssertEqual(CanvasReveal.parentFolderID(of: "file:a.py"), "folder:")
+        XCTAssertEqual(CanvasReveal.parentFolderID(of: "folder:a/b"), "folder:a")
+        // The root folder resolves to itself so a hidden target never walks past it.
+        XCTAssertEqual(CanvasReveal.parentFolderID(of: "folder:"), "folder:")
+        // Unrecognized node ids are treated as root-level.
+        XCTAssertEqual(CanvasReveal.parentFolderID(of: "other:x"), "folder:")
+    }
+
+    func testIsHiddenByCollapse() {
+        let none: Set<String> = []
+        XCTAssertFalse(CanvasReveal.isHiddenByCollapse(nodeID: "file:a/b.py", collapsedFolderIDs: none))
+
+        let collapsedA: Set<String> = ["folder:a"]
+        XCTAssertTrue(CanvasReveal.isHiddenByCollapse(nodeID: "file:a/b.py", collapsedFolderIDs: collapsedA))
+        XCTAssertTrue(CanvasReveal.isHiddenByCollapse(nodeID: "folder:a/b", collapsedFolderIDs: collapsedA))
+        XCTAssertFalse(CanvasReveal.isHiddenByCollapse(nodeID: "file:c.py", collapsedFolderIDs: collapsedA))
+        // The collapsed folder itself stays rendered.
+        XCTAssertFalse(CanvasReveal.isHiddenByCollapse(nodeID: "folder:a", collapsedFolderIDs: collapsedA))
+
+        // Path-prefix boundary: a sibling file is not hidden.
+        XCTAssertFalse(CanvasReveal.isHiddenByCollapse(nodeID: "file:a.py", collapsedFolderIDs: collapsedA))
+
+        let collapsedRoot: Set<String> = ["folder:"]
+        XCTAssertTrue(CanvasReveal.isHiddenByCollapse(nodeID: "file:a.py", collapsedFolderIDs: collapsedRoot))
+        XCTAssertFalse(CanvasReveal.isHiddenByCollapse(nodeID: "folder:", collapsedFolderIDs: collapsedRoot))
+    }
+
+    func testResolvedVisibleTarget() {
+        let none: Set<String> = []
+        XCTAssertEqual(
+            CanvasReveal.resolvedVisibleTarget(for: "file:a/b.py", collapsedFolderIDs: none),
+            "file:a/b.py"
+        )
+
+        // Hidden file falls back to the collapsed folder's own chip.
+        XCTAssertEqual(
+            CanvasReveal.resolvedVisibleTarget(for: "file:a/b/c.py", collapsedFolderIDs: ["folder:a/b"]),
+            "folder:a/b"
+        )
+        // Falls up to the nearest non-collapsed ancestor.
+        XCTAssertEqual(
+            CanvasReveal.resolvedVisibleTarget(for: "file:a/b/c.py", collapsedFolderIDs: ["folder:a"]),
+            "folder:a"
+        )
+        // A collapsed root resolves to the root folder itself.
+        XCTAssertEqual(
+            CanvasReveal.resolvedVisibleTarget(for: "file:a.py", collapsedFolderIDs: ["folder:"]),
+            "folder:"
+        )
+        XCTAssertNil(CanvasReveal.resolvedVisibleTarget(for: nil, collapsedFolderIDs: none))
+    }
 }
