@@ -145,7 +145,6 @@ public struct ChangeCanvasView: View {
                 // first responder while the view is disabled and never
                 // re-requests it for an unchanged value. Re-assert it on the
                 // node that was focused before the diff opened.
-                AppLog.info("canvas", "CANVAS_SHOW_CHANGE visible=\(isVisible)")
                 if isVisible {
                     restoreCanvasFocus()
                 }
@@ -614,39 +613,13 @@ public struct ChangeCanvasView: View {
         let targetNodeID = rememberedNodeID.flatMap { id in
             tree.nodes.contains(where: { $0.id == id }) ? id : nil
         } ?? tree.nodes.first?.id
-        guard let targetNodeID else {
-            AppLog.info("canvas", "CANVAS_FOCUS_RESTORE skip no-remembered-no-nodes")
-            return
-        }
-
-        let bridgeExists = focusTarget.view != nil
-        let windowIsKey = focusTarget.view?.window?.isKeyWindow
-        AppLog.info(
-            "canvas",
-            "CANVAS_FOCUS_RESTORE remembered=\(rememberedNodeID ?? "nil") target=\(targetNodeID) bridge=\(bridgeExists) windowKey=\(String(describing: windowIsKey)) firstResponderBefore=\(currentFirstResponderDescription())"
-        )
+        guard let targetNodeID else { return }
 
         setCanvasFocus(nil)
         DispatchQueue.main.async {
             setCanvasFocus(targetNodeID)
             if let view = focusTarget.view, let window = view.window {
                 window.makeFirstResponder(view)
-                let after = window.firstResponder
-                AppLog.info(
-                    "canvas",
-                    "CANVAS_FOCUS_RESTORE makeFirstResponder immediate=\(after === view) firstResponderAfter=\(after.map { String(describing: type(of: $0)) } ?? "nil")"
-                )
-                // Confirm the responder stuck once the run loop settles (a
-                // stale responder can reclaim the window on the next pass).
-                DispatchQueue.main.async {
-                    let settled = window.firstResponder
-                    AppLog.info(
-                        "canvas",
-                        "CANVAS_FOCUS_RESTORE settled=\(settled === view) firstResponder=\(settled.map { String(describing: type(of: $0)) } ?? "nil")"
-                    )
-                }
-            } else {
-                AppLog.info("canvas", "CANVAS_FOCUS_RESTORE noBridgeOrWindow bridge=\(bridgeExists)")
             }
         }
     }
@@ -659,20 +632,8 @@ public struct ChangeCanvasView: View {
         lastFocusedNodeID = nodeID
     }
 
-    /// Describes the window's current first responder for focus diagnostics.
-    private func currentFirstResponderDescription() -> String {
-        guard let window = focusTarget.view?.window else { return "no-window" }
-        guard let fr = window.firstResponder else { return "nil" }
-        let typeName = String(describing: type(of: fr))
-        if let nsView = fr as? NSView {
-            return "\(typeName)<\(nsView.accessibilityIdentifier() ?? "")>"
-        }
-        return typeName
-    }
-
     /// Logs and reacts to the canvas becoming visible again after a diff.
     private func handleShowCanvasChange(visible: Bool) {
-        AppLog.info("canvas", "CANVAS_SHOW_CHANGE visible=\(visible)")
         if visible {
             restoreCanvasFocus()
         }
@@ -696,7 +657,7 @@ public struct ChangeCanvasView: View {
     private func canvasDiagnosticContext() -> String {
         let viewport = viewportSize.map(String.init(describing:)) ?? "nil"
         let board = boardSize.map(String.init(describing:)) ?? "nil"
-        return "zoom=\(zoom) pinching=\(pinchStartZoom != nil) viewport=\(viewport) board=\(board) collapsed=\(collapsedFolderIDs.count) focused=\(focusedNodeID ?? "nil") last=\(lastFocusedNodeID ?? "nil")"
+        return "zoom=\(zoom) pinching=\(pinchStartZoom != nil) viewport=\(viewport) board=\(board) collapsed=\(collapsedFolderIDs.count) focused=\(focusedNodeID ?? "nil")"
     }
 
     private func targetsThisStore(_ note: Notification) -> Bool {

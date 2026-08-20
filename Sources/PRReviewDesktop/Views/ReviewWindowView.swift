@@ -111,7 +111,6 @@ public struct ReviewWindowView: View {
 
     private func handleReturnToCanvas(_ note: Notification) {
         guard matches(note) else { return }
-        AppLog.info("canvas", "CANVAS_RETURN_REQUEST showCanvas=\(showCanvas)")
         showCanvas = true
     }
 
