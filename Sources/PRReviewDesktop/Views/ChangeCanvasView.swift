@@ -64,10 +64,19 @@ public struct ChangeCanvasView: View {
     /// True once the initial board measurement has had its chance to fit-zoom;
     /// reset when a new PR loads so its map gets the same treatment.
     @State private var didAutoFit = false
+    /// Weak handle to the invisible first-responder bridge embedded in the
+    /// canvas scroll hierarchy (see `CanvasFocusBridge`).
+    @State private var focusTarget = CanvasFocusTarget()
     /// Folder IDs whose descendants are currently hidden from the canvas.
     @State private var collapsedFolderIDs: Set<String> = []
     /// The node currently selected for arrow-key navigation.
     @FocusState private var focusedNodeID: String?
+    /// A plain-State record of the intended focus. While a diff is shown the
+    /// canvas is `.disabled`, and SwiftUI resets `focusedNodeID` (a FocusState
+    /// binding) to nil because it cannot keep focus on a non-focusable view.
+    /// This regular @State survives the disabled period, so it is the source
+    /// used to restore focus when returning to the canvas.
+    @State private var lastFocusedNodeID: String?
 
     public static func clampedZoom(_ value: CGFloat) -> CGFloat {
         min(maximumZoom, max(minimumZoom, value))
@@ -114,6 +123,7 @@ public struct ChangeCanvasView: View {
                             fitInitialZoom(board: board)
                         }
                         focusedNodeID = focusedNodeID ?? CanvasTree.build(from: files).nodes.first?.id
+                        if lastFocusedNodeID == nil { lastFocusedNodeID = focusedNodeID }
                     }
                     .onChange(of: geometry.size) { newSize in
                         viewportSize = newSize
@@ -128,12 +138,24 @@ public struct ChangeCanvasView: View {
                 }
             }
             .accessibilityIdentifier("change-canvas-pane")
+            .onChange(of: showCanvas) { isVisible in
+                // The canvas stays mounted (hidden, disabled) while a diff is
+                // shown, so zoom, collapse, and selection state all survive.
+                // The actual keyboard focus does not: FocusState drops the
+                // first responder while the view is disabled and never
+                // re-requests it for an unchanged value. Re-assert it on the
+                // node that was focused before the diff opened.
+                AppLog.info("canvas", "CANVAS_SHOW_CHANGE visible=\(isVisible)")
+                if isVisible {
+                    restoreCanvasFocus()
+                }
+            }
             .onChange(of: store.review?.pr?.headRefOid) { _ in
                 // A reload/new PR gets a fresh fit-zoom pass and expansion
                 // state must not carry into a coincidentally shaped next tree.
                 didAutoFit = false
                 collapsedFolderIDs = []
-                focusedNodeID = nil
+                setCanvasFocus(nil)
             }
             .onReceive(NotificationCenter.default.publisher(for: .reviewCanvasCollapseFolderRequest)) { note in
                 guard showCanvas, targetsThisStore(note) else { return }
@@ -299,6 +321,15 @@ public struct ChangeCanvasView: View {
                 Color.clear.preference(key: CanvasBoardSizeKey.self, value: plan.boardSize)
             }
         }
+        // Invisible first-responder anchor for the whole canvas. SwiftUI's
+        // FocusState cannot re-engage the AppKit responder chain once the
+        // canvas returns from being disabled; restoring this view as the
+        // window's first responder routes arrow keys back into SwiftUI's
+        // focus engine, which re-applies the stored chip focus.
+        .background {
+            CanvasFocusBridge(target: focusTarget)
+                .allowsHitTesting(false)
+        }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
@@ -330,7 +361,7 @@ public struct ChangeCanvasView: View {
             let isCollapsed = collapsedFolderIDs.contains(node.id)
             Button {
                 AppLog.info("canvas", "CANVAS_FOLDER_TAP id=\(node.id) path=\(node.path) isCollapsed=\(isCollapsed) \(canvasDiagnosticContext())")
-                focusedNodeID = node.id
+                setCanvasFocus(node.id)
                 toggleFolder(node, in: CanvasTree.build(from: files))
             } label: {
                 TreeFolderChip(
@@ -348,7 +379,7 @@ public struct ChangeCanvasView: View {
             .onMoveCommand(perform: handleCanvasMove)
         } else if let file = node.file {
             Button {
-                focusedNodeID = node.id
+                setCanvasFocus(node.id)
                 open(file)
             } label: {
                 TreeFileChip(store: store, file: file, zoom: zoom)
@@ -480,6 +511,7 @@ public struct ChangeCanvasView: View {
         }
 
         focusedNodeID = nextNodeID
+        lastFocusedNodeID = nextNodeID
         AppLog.info("canvas", "CANVAS_KEYBOARD_FOCUS direction=\(direction) id=\(nextNodeID) \(canvasDiagnosticContext())")
     }
 
@@ -529,7 +561,7 @@ public struct ChangeCanvasView: View {
     private func collapseAllFolders(in tree: CanvasTree) {
         withAnimation(.easeInOut(duration: 0.2)) {
             collapsedFolderIDs = Set(tree.nodes.lazy.filter(\.isFolder).map(\.id))
-            focusedNodeID = tree.nodes.first?.id
+            setCanvasFocus(tree.nodes.first?.id)
         }
     }
 
@@ -569,6 +601,83 @@ public struct ChangeCanvasView: View {
         zoom = Self.clampedZoom(fit)
     }
 
+    /// Re-applies keyboard focus to the node that was focused before the diff
+    /// opened. `focusedNodeID` (a FocusState binding) is reset to nil while the
+    /// canvas is disabled, so the target comes from `lastFocusedNodeID`, which
+    /// survives. Clearing and restoring the FocusState value forces a fresh
+    /// focus request, and making the invisible bridge view the first
+    /// responder restores the AppKit responder chain so arrow keys route back
+    /// into SwiftUI's focus engine.
+    private func restoreCanvasFocus() {
+        let tree = CanvasTree.build(from: files)
+        let rememberedNodeID = lastFocusedNodeID
+        let targetNodeID = rememberedNodeID.flatMap { id in
+            tree.nodes.contains(where: { $0.id == id }) ? id : nil
+        } ?? tree.nodes.first?.id
+        guard let targetNodeID else {
+            AppLog.info("canvas", "CANVAS_FOCUS_RESTORE skip no-remembered-no-nodes")
+            return
+        }
+
+        let bridgeExists = focusTarget.view != nil
+        let windowIsKey = focusTarget.view?.window?.isKeyWindow
+        AppLog.info(
+            "canvas",
+            "CANVAS_FOCUS_RESTORE remembered=\(rememberedNodeID ?? "nil") target=\(targetNodeID) bridge=\(bridgeExists) windowKey=\(String(describing: windowIsKey)) firstResponderBefore=\(currentFirstResponderDescription())"
+        )
+
+        setCanvasFocus(nil)
+        DispatchQueue.main.async {
+            setCanvasFocus(targetNodeID)
+            if let view = focusTarget.view, let window = view.window {
+                window.makeFirstResponder(view)
+                let after = window.firstResponder
+                AppLog.info(
+                    "canvas",
+                    "CANVAS_FOCUS_RESTORE makeFirstResponder immediate=\(after === view) firstResponderAfter=\(after.map { String(describing: type(of: $0)) } ?? "nil")"
+                )
+                // Confirm the responder stuck once the run loop settles (a
+                // stale responder can reclaim the window on the next pass).
+                DispatchQueue.main.async {
+                    let settled = window.firstResponder
+                    AppLog.info(
+                        "canvas",
+                        "CANVAS_FOCUS_RESTORE settled=\(settled === view) firstResponder=\(settled.map { String(describing: type(of: $0)) } ?? "nil")"
+                    )
+                }
+            } else {
+                AppLog.info("canvas", "CANVAS_FOCUS_RESTORE noBridgeOrWindow bridge=\(bridgeExists)")
+            }
+        }
+    }
+
+    /// Sets the focus targets. Plain-state `lastFocusedNodeID` is kept in
+    /// sync with the FocusState binding because the binding itself is reset to
+    /// nil once the canvas is disabled.
+    private func setCanvasFocus(_ nodeID: String?) {
+        focusedNodeID = nodeID
+        lastFocusedNodeID = nodeID
+    }
+
+    /// Describes the window's current first responder for focus diagnostics.
+    private func currentFirstResponderDescription() -> String {
+        guard let window = focusTarget.view?.window else { return "no-window" }
+        guard let fr = window.firstResponder else { return "nil" }
+        let typeName = String(describing: type(of: fr))
+        if let nsView = fr as? NSView {
+            return "\(typeName)<\(nsView.accessibilityIdentifier() ?? "")>"
+        }
+        return typeName
+    }
+
+    /// Logs and reacts to the canvas becoming visible again after a diff.
+    private func handleShowCanvasChange(visible: Bool) {
+        AppLog.info("canvas", "CANVAS_SHOW_CHANGE visible=\(visible)")
+        if visible {
+            restoreCanvasFocus()
+        }
+    }
+
     private func open(_ file: DiffFile) {
         AppLog.info("canvas", "CANVAS_FILE_OPEN path=\(file.path) \(canvasDiagnosticContext())")
         store.select(filePath: file.path)
@@ -587,7 +696,7 @@ public struct ChangeCanvasView: View {
     private func canvasDiagnosticContext() -> String {
         let viewport = viewportSize.map(String.init(describing:)) ?? "nil"
         let board = boardSize.map(String.init(describing:)) ?? "nil"
-        return "zoom=\(zoom) pinching=\(pinchStartZoom != nil) viewport=\(viewport) board=\(board) collapsed=\(collapsedFolderIDs.count) focused=\(focusedNodeID ?? "nil")"
+        return "zoom=\(zoom) pinching=\(pinchStartZoom != nil) viewport=\(viewport) board=\(board) collapsed=\(collapsedFolderIDs.count) focused=\(focusedNodeID ?? "nil") last=\(lastFocusedNodeID ?? "nil")"
     }
 
     private func targetsThisStore(_ note: Notification) -> Bool {
@@ -1151,4 +1260,40 @@ private struct CanvasTreeLayout: Layout {
             )
         }
     }
+}
+
+// MARK: - First-responder bridge
+
+/// Weak handle to the canvas's invisible NSView, held by `ChangeCanvasView` so
+/// it can restore the AppKit first responder after returning from a focused
+/// diff.
+private final class CanvasFocusTarget {
+    weak var view: NSView?
+}
+
+/// An invisible NSView embedded in the canvas scroll hierarchy. SwiftUI's
+/// FocusState tracks which chip is focused but cannot re-engage the AppKit
+/// responder chain after the canvas is disabled and re-enabled; making this
+/// view the window's first responder routes keyboard events back into
+/// SwiftUI's focus engine, which re-applies the chip focus.
+private struct CanvasFocusBridge: NSViewRepresentable {
+    let target: CanvasFocusTarget
+
+    func makeNSView(context: Context) -> NSView {
+        let view = CanvasFocusBridgeView(frame: .zero)
+        view.setAccessibilityElement(false)
+        target.view = view
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
+/// The bridge's NSView accepts first responder status (plain NSViews do not)
+/// but never handles input itself — default responder behavior bubbles keys up
+/// to the SwiftUI hosting view, which routes them to the focused chip.
+private final class CanvasFocusBridgeView: NSView {
+    override var acceptsFirstResponder: Bool { true }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
