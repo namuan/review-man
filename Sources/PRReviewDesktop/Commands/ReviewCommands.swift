@@ -110,6 +110,34 @@ public struct ReviewCommands: Commands {
             .disabled(!availability.canRefresh)
         }
 
+        CommandMenu("Diff") {
+            Button("Unified") {
+                NotificationCenter.default.post(
+                    name: .reviewDiffPresentationRequest,
+                    object: focusedStore,
+                    userInfo: ["presentation": DiffPresentation.unified.rawValue]
+                )
+            }
+            .disabled(!availability.canToggleViewed)
+
+            Button("Side by Side") {
+                NotificationCenter.default.post(
+                    name: .reviewDiffPresentationRequest,
+                    object: focusedStore,
+                    userInfo: ["presentation": DiffPresentation.sideBySide.rawValue]
+                )
+            }
+            .disabled(!availability.canToggleViewed)
+
+            Divider()
+
+            Button("Toggle Diff Layout") {
+                NotificationCenter.default.post(name: .reviewDiffPresentationRequest, object: focusedStore)
+            }
+            .keyboardShortcut("d", modifiers: [.command, .control, .option])
+            .disabled(!availability.canToggleViewed)
+        }
+
         CommandMenu("Canvas") {
             Button("Zoom In") {
                 NotificationCenter.default.post(
@@ -245,6 +273,7 @@ public extension Notification.Name {
     static let reviewSubmitRequest = Notification.Name("review.submit")
     static let reviewRefreshRequest = Notification.Name("review.refresh")
     static let reviewToggleSidebarRequest = Notification.Name("review.toggleSidebar")
+    static let reviewDiffPresentationRequest = Notification.Name("review.diffPresentation")
     static let reviewCollapseAllFoldersRequest = Notification.Name("review.collapseAllFolders")
     static let reviewExpandAllFoldersRequest = Notification.Name("review.expandAllFolders")
     static let reviewCanvasZoomInRequest = Notification.Name("review.canvasZoomIn")

@@ -56,6 +56,11 @@ public struct ReviewWindowView: View {
             sidebarVisible: $sidebarVisible,
             canvasZoom: $canvasZoom
         ))
+        .modifier(DiffPresentationCommandRouting(
+            store: store,
+            showCanvas: $showCanvas,
+            diffPresentation: $diffPresentation
+        ))
         .toolbar { toolbarContent }
         .onChange(of: store.requestFocus) { _ in
             if store.requestFocus == .sidebarSearch {
@@ -502,6 +507,32 @@ private struct CommandRoutingModifier: ViewModifier {
                 guard matches(note) else { return }
                 if let file = store.selectedFile { store.selectAdjacentHunk(1, in: file) }
             }
+    }
+
+    private func matches(_ note: Notification) -> Bool {
+        guard let object = note.object as? ReviewSessionStore else { return true }
+        return object === store
+    }
+}
+
+/// Keeps the diff-layout commands separate from the larger command router so
+/// Swift's type checker does not need to infer one oversized modifier chain.
+private struct DiffPresentationCommandRouting: ViewModifier {
+    @ObservedObject var store: ReviewSessionStore
+    @Binding var showCanvas: Bool
+    @Binding var diffPresentation: DiffPresentation
+
+    func body(content: Content) -> some View {
+        content.onReceive(NotificationCenter.default.publisher(for: .reviewDiffPresentationRequest)) { note in
+            guard matches(note), store.selectedFile != nil else { return }
+            if let rawValue = note.userInfo?["presentation"] as? String,
+               let presentation = DiffPresentation(rawValue: rawValue) {
+                diffPresentation = presentation
+            } else {
+                diffPresentation = diffPresentation == .unified ? .sideBySide : .unified
+            }
+            showCanvas = false
+        }
     }
 
     private func matches(_ note: Notification) -> Bool {
