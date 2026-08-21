@@ -273,8 +273,8 @@ private struct SidebarFileItemRow: View {
 
             Text(title)
                 .font(.system(size: 12, design: .monospaced))
-                .lineLimit(1)
-                .truncationMode(.middle)
+                .fixedSize(horizontal: false, vertical: true)
+                .layoutPriority(1)
 
             Spacer(minLength: 4)
 
