@@ -30,6 +30,10 @@ struct PRReviewApp: App {
         .commands {
             ReviewCommands()
         }
+
+        Settings {
+            ShortcutSettingsView()
+        }
     }
 }
 

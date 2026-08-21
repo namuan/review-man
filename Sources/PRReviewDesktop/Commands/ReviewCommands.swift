@@ -7,6 +7,7 @@ import PRReviewKit
 public struct ReviewCommands: Commands {
 
     @FocusedObject private var focusedStore: ReviewSessionStore?
+    @ObservedObject private var shortcutPreferences = ReviewShortcutPreferences.shared
 
     public init() {}
 
@@ -134,7 +135,7 @@ public struct ReviewCommands: Commands {
             Button("Toggle Diff Layout") {
                 NotificationCenter.default.post(name: .reviewDiffPresentationRequest, object: focusedStore)
             }
-            .keyboardShortcut("d", modifiers: [.command, .control, .option])
+            .keyboardShortcut(shortcutPreferences.shortcut(for: .toggleDiffLayout).keyboardShortcut)
             .disabled(!availability.canToggleViewed)
         }
 
@@ -211,7 +212,7 @@ public struct ReviewCommands: Commands {
             Button("Toggle Sidebar") {
                 NotificationCenter.default.post(name: .reviewToggleSidebarRequest, object: focusedStore)
             }
-            .keyboardShortcut("s", modifiers: [.command, .control])
+            .keyboardShortcut(shortcutPreferences.shortcut(for: .toggleSidebar).keyboardShortcut)
 
             Divider()
 
