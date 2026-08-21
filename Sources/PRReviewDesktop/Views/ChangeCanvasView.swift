@@ -1,5 +1,6 @@
-import SwiftUI
+import AppKit
 import Foundation
+import SwiftUI
 import PRReviewKit
 
 /// A spatial overview of every file changed by the pull request, drawn as a
@@ -313,6 +314,7 @@ public struct ChangeCanvasView: View {
                         treeNodeView(
                             node: node,
                             descendantFileCount: tree.subtreeFileCounts[index],
+                            size: plan.frames[index].size,
                             zoom: zoom
                         )
                         .id(canvasScrollID(node.id))
@@ -345,13 +347,20 @@ public struct ChangeCanvasView: View {
         }
     }
 
-    /// Node sizes are fixed by kind (folder chip vs file chip), so the plan
-    /// is a pure function of the tree structure — no measurement needed.
+    /// Node dimensions include each label's measured width, keeping every
+    /// file and folder name visible while preserving a pure layout plan.
     private func treePlan(for tree: CanvasTree) -> TreePlan {
-        let sizes = tree.nodes.map { node in
-            node.isFolder
-                ? CGSize(width: TreeMetrics.folderWidth, height: TreeMetrics.folderHeight)
-                : CGSize(width: TreeMetrics.fileWidth, height: TreeMetrics.fileHeight)
+        let sizes = tree.nodes.enumerated().map { index, node in
+            if node.isFolder {
+                TreeMetrics.folderSize(
+                    for: node.name,
+                    descendantFileCount: tree.subtreeFileCounts[index]
+                )
+            } else if let file = node.file {
+                TreeMetrics.fileSize(for: file)
+            } else {
+                TreeMetrics.fileSize(for: nil)
+            }
         }
         return TreePlan.compute(
             sizes: sizes,
@@ -367,6 +376,7 @@ public struct ChangeCanvasView: View {
     private func treeNodeView(
         node: CanvasTree.Node,
         descendantFileCount: Int,
+        size: CGSize,
         zoom: CGFloat
     ) -> some View {
         if node.isFolder {
@@ -380,6 +390,7 @@ public struct ChangeCanvasView: View {
                     node: node,
                     descendantFileCount: descendantFileCount,
                     isCollapsed: isCollapsed,
+                    size: size,
                     zoom: zoom
                 )
             }
@@ -394,7 +405,7 @@ public struct ChangeCanvasView: View {
                 setCanvasFocus(node.id)
                 open(file)
             } label: {
-                TreeFileChip(store: store, file: file, zoom: zoom)
+                TreeFileChip(store: store, file: file, size: size, zoom: zoom)
             }
             .buttonStyle(.plain)
             // The Button is the hover target, so its help must carry the path;
@@ -1187,13 +1198,35 @@ struct TreePlan {
 }
 
 private enum TreeMetrics {
-    static let folderWidth: CGFloat = 190
+    static let folderMinimumWidth: CGFloat = 190
     static let folderHeight: CGFloat = 54
-    static let fileWidth: CGFloat = 250
+    static let fileMinimumWidth: CGFloat = 250
     static let fileHeight: CGFloat = 50
     static let columnGap: CGFloat = 48
     static let rowGap: CGFloat = 24
     static let padding: CGFloat = 40
+
+    static func folderSize(for name: String, descendantFileCount: Int) -> CGSize {
+        let nameWidth = textWidth(name, font: .systemFont(ofSize: 12, weight: .semibold))
+        let countWidth = textWidth("\(descendantFileCount)", font: .monospacedSystemFont(ofSize: 10, weight: .bold)) + 12
+        // Chevron, icon, inter-item gaps, flexible gap, and horizontal padding.
+        let chromeWidth: CGFloat = 10 + 12 + 8 + 8 + 4 + 24
+        return CGSize(width: max(folderMinimumWidth, nameWidth + countWidth + chromeWidth), height: folderHeight)
+    }
+
+    static func fileSize(for file: DiffFile?) -> CGSize {
+        let fileName = file?.path.split(separator: "/").last.map(String.init) ?? ""
+        let nameWidth = textWidth(fileName, font: .monospacedSystemFont(ofSize: 12, weight: .semibold))
+        let counts = file.map { "+\($0.additions) −\($0.deletions)" } ?? ""
+        let countWidth = textWidth(counts, font: .monospacedSystemFont(ofSize: 10, weight: .regular))
+        // Status, inter-item gaps, a viewed-mark reservation, and horizontal padding.
+        let chromeWidth: CGFloat = 18 + 8 + 4 + 20 + 20
+        return CGSize(width: max(fileMinimumWidth, nameWidth + countWidth + chromeWidth), height: fileHeight)
+    }
+
+    private static func textWidth(_ text: String, font: NSFont) -> CGFloat {
+        (text as NSString).size(withAttributes: [.font: font]).width
+    }
 }
 
 // MARK: - Chips
@@ -1203,6 +1236,7 @@ private struct TreeFolderChip: View {
     let node: CanvasTree.Node
     let descendantFileCount: Int
     let isCollapsed: Bool
+    let size: CGSize
     let zoom: CGFloat
 
     var body: some View {
@@ -1216,8 +1250,7 @@ private struct TreeFolderChip: View {
                 .foregroundStyle(.orange)
             Text(node.name)
                 .font(.system(size: 12 * zoom, weight: .semibold))
-                .lineLimit(1)
-                .truncationMode(.middle)
+                .fixedSize(horizontal: true, vertical: false)
             Spacer(minLength: 4 * zoom)
             Text("\(descendantFileCount)")
                 .font(.system(size: 10 * zoom, weight: .bold, design: .monospaced))
@@ -1226,7 +1259,7 @@ private struct TreeFolderChip: View {
                 .background(Color.primary.opacity(0.08), in: Capsule())
         }
         .padding(.horizontal, 12 * zoom)
-        .frame(width: TreeMetrics.folderWidth * zoom, height: TreeMetrics.folderHeight * zoom)
+        .frame(width: size.width * zoom, height: size.height * zoom)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10 * zoom))
         .overlay {
             RoundedRectangle(cornerRadius: 10 * zoom)
@@ -1243,6 +1276,7 @@ private struct TreeFolderChip: View {
 private struct TreeFileChip: View {
     @ObservedObject var store: ReviewSessionStore
     let file: DiffFile
+    let size: CGSize
     let zoom: CGFloat
 
     var body: some View {
@@ -1255,8 +1289,7 @@ private struct TreeFileChip: View {
 
             Text(fileName)
                 .font(.system(size: 12 * zoom, weight: .semibold, design: .monospaced))
-                .lineLimit(1)
-                .truncationMode(.middle)
+                .fixedSize(horizontal: true, vertical: false)
 
             Spacer(minLength: 4 * zoom)
 
@@ -1271,7 +1304,7 @@ private struct TreeFileChip: View {
             }
         }
         .padding(.horizontal, 10 * zoom)
-        .frame(width: TreeMetrics.fileWidth * zoom, height: TreeMetrics.fileHeight * zoom)
+        .frame(width: size.width * zoom, height: size.height * zoom)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 9 * zoom))
         .overlay {
             RoundedRectangle(cornerRadius: 9 * zoom)
