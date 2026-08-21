@@ -202,13 +202,11 @@ public struct ChangeCanvasView: View {
         return HStack(spacing: 10) {
             Image(systemName: "map")
                 .foregroundStyle(.orange)
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Change canvas")
-                    .font(.headline)
-                Text(toolbarSubtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            Text("Change canvas")
+                .font(.headline)
+            Text(toolbarSubtitle)
+                .font(.caption)
+                .foregroundStyle(.secondary)
             Spacer()
             if scale != .full {
                 Text(scale == .condensed ? "Condensed" : "Overview")
@@ -283,7 +281,7 @@ public struct ChangeCanvasView: View {
             .help("Expand every folder in the tree")
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 9)
+        .padding(.vertical, 7)
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.96))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("change-canvas-toolbar")
