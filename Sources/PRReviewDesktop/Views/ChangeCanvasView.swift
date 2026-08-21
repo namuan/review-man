@@ -13,6 +13,23 @@ import PRReviewKit
 /// Full cards render every hunk and line; once a PR is large enough to
 /// degrade, cards collapse to the file name only. This keeps the canvas
 /// usable on `make demo` scale PRs.
+/// Converts discrete mouse-wheel ticks into Canvas zoom changes. Precise
+/// scroll input (trackpads) remains available for panning the canvas.
+enum CanvasWheelZoom {
+    static func adjustedZoom(
+        currentZoom: CGFloat,
+        scrollingDeltaY: CGFloat,
+        hasPreciseScrollingDeltas: Bool
+    ) -> CGFloat? {
+        guard !hasPreciseScrollingDeltas, scrollingDeltaY != 0 else { return nil }
+        let adjustment = scrollingDeltaY > 0
+            ? ChangeCanvasView.zoomStep
+            : -ChangeCanvasView.zoomStep
+        let zoom = ChangeCanvasView.clampedZoom(currentZoom + adjustment)
+        return zoom == currentZoom ? nil : zoom
+    }
+}
+
 public enum CanvasScale: Equatable {
     case full
     case condensed
@@ -279,11 +296,11 @@ public struct ChangeCanvasView: View {
     private var toolbarSubtitle: String {
         switch scale {
         case .full:
-            return "Folder tree, left to right · Pinch or ⌘+/⌘− to zoom"
+            return "Folder tree, left to right · Mouse wheel, pinch, or ⌘+/⌘− to zoom"
         case .condensed:
-            return "Compact chips for large PRs · Folder tree, left to right"
+            return "Compact chips · Mouse wheel, pinch, or ⌘+/⌘− to zoom"
         case .summary:
-            return "File names only for very large PRs · Folder tree, left to right"
+            return "File names only · Mouse wheel, pinch, or ⌘+/⌘− to zoom"
         }
     }
 
@@ -335,6 +352,8 @@ public struct ChangeCanvasView: View {
             // focus engine, which re-applies the stored chip focus.
             .background {
                 CanvasFocusBridge(target: focusTarget)
+                    .allowsHitTesting(false)
+                CanvasWheelZoomMonitor(zoom: $zoom, isEnabled: showCanvas)
                     .allowsHitTesting(false)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -1428,4 +1447,88 @@ private final class CanvasFocusBridgeView: NSView {
     override var acceptsFirstResponder: Bool { true }
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+/// Observes discrete mouse-wheel events over the canvas without taking over
+/// hit testing. Trackpad scrolling is deliberately passed through to the
+/// ScrollView, while a physical wheel adjusts the Canvas zoom.
+private struct CanvasWheelZoomMonitor: NSViewRepresentable {
+    @Binding var zoom: CGFloat
+    let isEnabled: Bool
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(zoom: $zoom, isEnabled: isEnabled)
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        view.setAccessibilityElement(false)
+        context.coordinator.install(on: view)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.update(zoom: $zoom, isEnabled: isEnabled)
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.removeEventMonitor()
+    }
+
+    final class Coordinator {
+        private weak var view: NSView?
+        private var eventMonitor: Any?
+        private var zoom: Binding<CGFloat>
+        private var isEnabled: Bool
+
+        init(zoom: Binding<CGFloat>, isEnabled: Bool) {
+            self.zoom = zoom
+            self.isEnabled = isEnabled
+        }
+
+        deinit {
+            removeEventMonitor()
+        }
+
+        func install(on view: NSView) {
+            self.view = view
+            eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+                guard let self else { return event }
+                return handle(event) ? nil : event
+            }
+        }
+
+        func update(zoom: Binding<CGFloat>, isEnabled: Bool) {
+            self.zoom = zoom
+            self.isEnabled = isEnabled
+        }
+
+        func removeEventMonitor() {
+            guard let eventMonitor else { return }
+            NSEvent.removeMonitor(eventMonitor)
+            self.eventMonitor = nil
+        }
+
+        private func handle(_ event: NSEvent) -> Bool {
+            guard isEnabled,
+                  let view,
+                  let window = view.window,
+                  event.window === window else {
+                return false
+            }
+
+            let location = view.convert(event.locationInWindow, from: nil)
+            guard view.bounds.contains(location),
+                  let zoom = CanvasWheelZoom.adjustedZoom(
+                      currentZoom: zoom.wrappedValue,
+                      scrollingDeltaY: event.scrollingDeltaY,
+                      hasPreciseScrollingDeltas: event.hasPreciseScrollingDeltas
+                  ) else {
+                return false
+            }
+
+            self.zoom.wrappedValue = zoom
+            return true
+        }
+    }
 }
