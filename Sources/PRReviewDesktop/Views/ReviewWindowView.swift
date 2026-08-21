@@ -16,6 +16,7 @@ public struct ReviewWindowView: View {
     /// or a file in the sidebar switches back to the focused-file view.
     @State private var showCanvas = true
     @State private var canvasZoom = ChangeCanvasView.defaultZoom
+    @State private var diffPresentation: DiffPresentation = .unified
     @State private var showCloseWarning = false
 
     public init(store: ReviewSessionStore) {
@@ -139,6 +140,17 @@ public struct ReviewWindowView: View {
                 .frame(width: 170)
                 .accessibilityLabel("Diff view")
                 .accessibilityIdentifier("diff-view-picker")
+
+                if !showCanvas {
+                    Picker("Diff layout", selection: $diffPresentation) {
+                        ForEach(DiffPresentation.allCases) { presentation in
+                            Text(presentation.title).tag(presentation)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 190)
+                    .accessibilityIdentifier("diff-layout-picker")
+                }
 
                 Button {
                     showOpenSheet = true
@@ -338,7 +350,7 @@ public struct ReviewWindowView: View {
                         .accessibilityHidden(!showCanvas)
 
                         if !showCanvas, let file = store.selectedFile {
-                            DiffView(store: store, file: file)
+                            DiffView(store: store, file: file, presentation: $diffPresentation)
                         } else if !showCanvas {
                             EmptyStateView(
                                 icon: "sidebar.left",

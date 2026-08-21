@@ -1,18 +1,35 @@
 import SwiftUI
 import PRReviewKit
 
+/// The available presentations for a textual file diff.
+public enum DiffPresentation: String, CaseIterable, Identifiable {
+    case unified
+    case sideBySide
+
+    public var id: Self { self }
+
+    public var title: String {
+        switch self {
+        case .unified: return "Unified"
+        case .sideBySide: return "Side by Side"
+        }
+    }
+}
+
 /// The diff pane for one file: fixed-width gutters, horizontal scrolling,
 /// LazyVStack rows with stable IDs, and programmatic scroll support.
 public struct DiffView: View {
     @ObservedObject public var store: ReviewSessionStore
     public let file: DiffFile
+    @Binding public var presentation: DiffPresentation
     /// Compact language identity for the whole file (cache key). Resolved once
     /// per body evaluation instead of once per line.
     private let languageID: Int?
 
-    public init(store: ReviewSessionStore, file: DiffFile) {
+    public init(store: ReviewSessionStore, file: DiffFile, presentation: Binding<DiffPresentation>) {
         self.store = store
         self.file = file
+        _presentation = presentation
         self.languageID = Highlighter.languageID(for: file.path)
     }
 
@@ -39,6 +56,10 @@ public struct DiffView: View {
                 message: "\(file.path) has no textual changes to display."
             )
             .accessibilityIdentifier("empty-file-state")
+        } else if presentation == .sideBySide {
+            SideBySideDiffView(store: store, file: file)
+                .onAppear { diffDidAppear() }
+                .onDisappear { store.performance.diffDidDisappear(path: file.path) }
         } else {
             switch AppKitDiffSpike.mode {
             case .disabled:
@@ -46,7 +67,7 @@ public struct DiffView: View {
             case .surface:
                 AppKitDiffSurfaceView(store: store, file: file)
                     .accessibilityIdentifier("diff-pane-appkit-surface")
-                    .onAppear { appKitDiffDidAppear() }
+                    .onAppear { diffDidAppear() }
                     .onDisappear { store.performance.diffDidDisappear(path: file.path) }
             }
         }
@@ -98,7 +119,7 @@ public struct DiffView: View {
         }
     }
 
-    private func appKitDiffDidAppear() {
+    private func diffDidAppear() {
         store.performance.diffDidAppear(
             path: file.path,
             lineCount: file.lineCount,

@@ -128,10 +128,25 @@ public struct DiffLineView: View {
     /// Click selects the line; Shift-click completes a range. Ranges are
     /// validated and either begin a draft or show an explanation.
     private func handleTap(hunkIndex: Int, lineIndex: Int) {
+        DiffLineSelection.handleTap(store: store, file: file, hunkIndex: hunkIndex, lineIndex: lineIndex)
+    }
+
+    private func kindBackground(_ kind: DiffLine.Kind, palette: SemanticTheme.Palette) -> SwiftUI.Color {
+        switch kind {
+        case .added: return palette.addedBackground
+        case .removed: return palette.removedBackground
+        case .context: return .clear
+        }
+    }
+}
+
+/// Shared selection behavior for unified and side-by-side line cells.
+@MainActor
+enum DiffLineSelection {
+    static func handleTap(store: ReviewSessionStore, file: DiffFile, hunkIndex: Int, lineIndex: Int) {
         guard let diffLine = file.line(at: hunkIndex, lineIndex) else { return }
         let isShift = NSEvent.modifierFlags.contains(.shift)
         if isShift, let startRow = store.selection.rowID {
-            // Shift-click: build the range from the current line + anchor line.
             let end = (file, hunkIndex, lineIndex)
             var start: (file: DiffFile, hunkIndex: Int, lineIndex: Int)?
             if let position = store.linePosition(for: startRow, in: file) {
@@ -157,14 +172,6 @@ public struct DiffLineView: View {
                 file: file.path, hunk: hunkIndex, kind: diffLine.kind,
                 old: diffLine.oldLine, new: diffLine.newLine
             )
-        }
-    }
-
-    private func kindBackground(_ kind: DiffLine.Kind, palette: SemanticTheme.Palette) -> SwiftUI.Color {
-        switch kind {
-        case .added: return palette.addedBackground
-        case .removed: return palette.removedBackground
-        case .context: return .clear
         }
     }
 }
