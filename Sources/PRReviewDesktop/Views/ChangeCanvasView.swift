@@ -1277,6 +1277,7 @@ private struct TreeFileChip: View {
         }
         .shadow(color: Color.black.opacity(0.07), radius: 4 * zoom, y: 2 * zoom)
         .contentShape(RoundedRectangle(cornerRadius: 9 * zoom))
+        .help(file.path)
     }
 
     private var fileName: String {
