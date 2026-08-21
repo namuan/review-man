@@ -13,44 +13,85 @@ public struct ShortcutSettingsView: View {
     }
 
     public var body: some View {
-        Form {
-            Section("Keyboard Shortcuts") {
-                ForEach(ReviewShortcutCommand.allCases) { command in
-                    HStack {
-                        Text(command.title)
-                        Spacer()
-                        ShortcutRecorderButton(
-                            title: "Shortcut for \(command.title)",
-                            shortcut: preferences.shortcut(for: command),
-                            isRecording: recordingBinding(for: command),
-                            onRecord: { shortcut in
-                                record(shortcut, for: command)
-                            }
-                        )
-                        if recordingCommand == command {
-                            Button("Cancel") {
-                                recordingCommand = nil
+        VStack(alignment: .leading, spacing: 20) {
+            header
+
+            VStack(alignment: .leading) {
+                Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 10) {
+                    GridRow {
+                        Text("Action")
+                            .columnHeaderStyle()
+                        Text("Shortcut")
+                            .columnHeaderStyle()
+                            .frame(width: 132, alignment: .leading)
+                        Color.clear
+                            .frame(width: 64, height: 1)
+                    }
+
+                    ForEach(ReviewShortcutCommand.allCases) { command in
+                        GridRow {
+                            Text(command.title)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            ShortcutRecorderButton(
+                                title: "Shortcut for \(command.title)",
+                                shortcut: preferences.shortcut(for: command),
+                                isRecording: recordingBinding(for: command),
+                                onRecord: { shortcut in
+                                    record(shortcut, for: command)
+                                }
+                            )
+                            .frame(width: 132, alignment: .leading)
+
+                            if recordingCommand == command {
+                                Button("Cancel") {
+                                    recordingCommand = nil
+                                }
+                                .frame(width: 64, alignment: .leading)
+                            } else {
+                                Color.clear
+                                    .frame(width: 64, height: 1)
                             }
                         }
                     }
                 }
             }
+            .padding(16)
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
 
-            Section {
-                Text("Click a field, then press Command plus the key you want to use. Press Escape or Cancel to leave it unchanged.")
+            if let errorMessage {
+                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
+            Divider()
+
+            HStack(alignment: .center, spacing: 16) {
+                Text("Changes apply immediately and are saved for future launches.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                if let errorMessage {
-                    Text(errorMessage)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
+                Spacer()
                 Button("Restore Defaults", action: restoreDefaults)
             }
         }
-        .formStyle(.grouped)
-        .frame(width: 440)
-        .padding()
+        .padding(24)
+        .frame(width: 520)
+    }
+
+    private var header: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "keyboard")
+                .font(.title2)
+                .foregroundStyle(.tint)
+                .frame(width: 28)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Keyboard Shortcuts")
+                    .font(.title3.weight(.semibold))
+                Text("Choose shortcuts for your most-used review controls.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 
     private func recordingBinding(for command: ReviewShortcutCommand) -> Binding<Bool> {
@@ -75,6 +116,13 @@ public struct ShortcutSettingsView: View {
     private func restoreDefaults() {
         preferences.restoreDefaults()
         errorMessage = nil
+    }
+}
+
+private extension View {
+    func columnHeaderStyle() -> some View {
+        font(.caption.weight(.medium))
+            .foregroundStyle(.secondary)
     }
 }
 
