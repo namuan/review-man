@@ -6,6 +6,7 @@ import SwiftUI
 public struct ShortcutSettingsView: View {
     @ObservedObject private var preferences: ReviewShortcutPreferences
     @State private var errorMessage: String?
+    @State private var recordingCommand: ReviewShortcutCommand?
 
     public init(preferences: ReviewShortcutPreferences? = nil) {
         self.preferences = preferences ?? .shared
@@ -20,16 +21,23 @@ public struct ShortcutSettingsView: View {
                         Spacer()
                         ShortcutRecorderButton(
                             title: "Shortcut for \(command.title)",
-                            shortcut: preferences.shortcut(for: command)
-                        ) { shortcut in
-                            record(shortcut, for: command)
+                            shortcut: preferences.shortcut(for: command),
+                            isRecording: recordingBinding(for: command),
+                            onRecord: { shortcut in
+                                record(shortcut, for: command)
+                            }
+                        )
+                        if recordingCommand == command {
+                            Button("Cancel") {
+                                recordingCommand = nil
+                            }
                         }
                     }
                 }
             }
 
             Section {
-                Text("Click a field, then press Command plus the key you want to use.")
+                Text("Click a field, then press Command plus the key you want to use. Press Escape or Cancel to leave it unchanged.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if let errorMessage {
@@ -45,10 +53,23 @@ public struct ShortcutSettingsView: View {
         .padding()
     }
 
-    private func record(_ shortcut: ReviewShortcut, for command: ReviewShortcutCommand) {
-        errorMessage = preferences.set(shortcut, for: command)
-            ? nil
-            : "That shortcut is already assigned to another action."
+    private func recordingBinding(for command: ReviewShortcutCommand) -> Binding<Bool> {
+        Binding(
+            get: { recordingCommand == command },
+            set: { isRecording in
+                if isRecording {
+                    recordingCommand = command
+                } else if recordingCommand == command {
+                    recordingCommand = nil
+                }
+            }
+        )
+    }
+
+    private func record(_ shortcut: ReviewShortcut, for command: ReviewShortcutCommand) -> Bool {
+        let wasSaved = preferences.set(shortcut, for: command)
+        errorMessage = wasSaved ? nil : "That shortcut is already assigned to another action."
+        return wasSaved
     }
 
     private func restoreDefaults() {
@@ -60,31 +81,34 @@ public struct ShortcutSettingsView: View {
 private struct ShortcutRecorderButton: NSViewRepresentable {
     let title: String
     let shortcut: ReviewShortcut
-    let onRecord: (ReviewShortcut) -> Void
+    @Binding var isRecording: Bool
+    let onRecord: (ReviewShortcut) -> Bool
 
     func makeNSView(context: Context) -> RecorderButton {
         let button = RecorderButton()
         button.setAccessibilityLabel(title)
+        button.configure(shortcut: shortcut, isRecording: isRecording)
         button.onRecord = onRecord
-        button.shortcut = shortcut
+        button.onRecordingChange = { isRecording in
+            self.isRecording = isRecording
+        }
         return button
     }
 
     func updateNSView(_ button: RecorderButton, context: Context) {
         button.setAccessibilityLabel(title)
         button.onRecord = onRecord
-        button.shortcut = shortcut
+        button.onRecordingChange = { isRecording in
+            self.isRecording = isRecording
+        }
+        button.configure(shortcut: shortcut, isRecording: isRecording)
     }
 
     final class RecorderButton: NSButton {
-        var onRecord: ((ReviewShortcut) -> Void)?
-        var shortcut: ReviewShortcut {
-            didSet {
-                guard !isRecording else { return }
-                title = shortcut.displayString
-            }
-        }
+        var onRecord: ((ReviewShortcut) -> Bool)?
+        var onRecordingChange: ((Bool) -> Void)?
 
+        private var shortcut = ReviewShortcut(key: "d", modifiers: [.command])
         private var isRecording = false {
             didSet {
                 title = isRecording ? "Type Shortcut" : shortcut.displayString
@@ -92,7 +116,6 @@ private struct ShortcutRecorderButton: NSViewRepresentable {
         }
 
         override init(frame frameRect: NSRect) {
-            shortcut = ReviewShortcut(key: "d", modifiers: [.command])
             super.init(frame: frameRect)
             bezelStyle = .rounded
             focusRingType = .default
@@ -105,13 +128,30 @@ private struct ShortcutRecorderButton: NSViewRepresentable {
 
         override var acceptsFirstResponder: Bool { true }
 
+        func configure(shortcut: ReviewShortcut, isRecording: Bool) {
+            self.shortcut = shortcut
+            guard self.isRecording != isRecording else {
+                if !isRecording { title = shortcut.displayString }
+                return
+            }
+            self.isRecording = isRecording
+            if !isRecording, window?.firstResponder === self {
+                window?.makeFirstResponder(nil)
+            }
+        }
+
         override func mouseDown(with event: NSEvent) {
             window?.makeFirstResponder(self)
+            guard !isRecording else { return }
             isRecording = true
+            onRecordingChange?(true)
         }
 
         override func resignFirstResponder() -> Bool {
-            isRecording = false
+            if isRecording {
+                isRecording = false
+                onRecordingChange?(false)
+            }
             return super.resignFirstResponder()
         }
 
@@ -124,8 +164,10 @@ private struct ShortcutRecorderButton: NSViewRepresentable {
                 NSSound.beep()
                 return
             }
-            onRecord?(shortcut)
-            window?.makeFirstResponder(nil)
+            if onRecord?(shortcut) == true {
+                self.shortcut = shortcut
+            }
+            endRecording()
         }
 
         override func performKeyEquivalent(with event: NSEvent) -> Bool {
@@ -135,6 +177,13 @@ private struct ShortcutRecorderButton: NSViewRepresentable {
         }
 
         override func cancelOperation(_ sender: Any?) {
+            endRecording()
+        }
+
+        private func endRecording() {
+            guard isRecording else { return }
+            isRecording = false
+            onRecordingChange?(false)
             window?.makeFirstResponder(nil)
         }
     }
