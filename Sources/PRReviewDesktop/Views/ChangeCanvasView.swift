@@ -397,7 +397,9 @@ public struct ChangeCanvasView: View {
                 TreeFileChip(store: store, file: file, zoom: zoom)
             }
             .buttonStyle(.plain)
-            .help("Open focused diff")
+            // The Button is the hover target, so its help must carry the path;
+            // help attached inside the label is superseded by this modifier.
+            .help("\(file.path)\nOpen focused diff")
             .contextMenu {
                 Button("Open focused diff") { open(file) }
                 Button(fileIsViewed(file) ? "Mark unviewed" : "Mark viewed") {
@@ -1277,7 +1279,6 @@ private struct TreeFileChip: View {
         }
         .shadow(color: Color.black.opacity(0.07), radius: 4 * zoom, y: 2 * zoom)
         .contentShape(RoundedRectangle(cornerRadius: 9 * zoom))
-        .help(file.path)
     }
 
     private var fileName: String {
