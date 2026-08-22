@@ -46,7 +46,7 @@ struct SideBySideDiffView: View {
             .frame(width: geometry.size.width, height: geometry.size.height, alignment: .leading)
         }
         .accessibilityIdentifier("side-by-side-diff-pane")
-        .onExitCommand { handleExitCommand() }
+        .background(SideBySideEscapeMonitor(onEscape: handleExitCommand))
     }
 
     /// Mirror the AppKit unified surface: Escape closes an active editor or
@@ -54,6 +54,63 @@ struct SideBySideDiffView: View {
     private func handleExitCommand() {
         guard !store.cancelTransientInteraction() else { return }
         NotificationCenter.default.post(name: .reviewReturnToCanvasRequest, object: store)
+    }
+}
+
+private struct SideBySideEscapeMonitor: NSViewRepresentable {
+    let onEscape: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onEscape: onEscape)
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        view.setAccessibilityElement(false)
+        context.coordinator.install(on: view)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.onEscape = onEscape
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.removeEventMonitor()
+    }
+
+    final class Coordinator {
+        var onEscape: () -> Void
+        private weak var view: NSView?
+        private var eventMonitor: Any?
+
+        init(onEscape: @escaping () -> Void) {
+            self.onEscape = onEscape
+        }
+
+        deinit {
+            removeEventMonitor()
+        }
+
+        func install(on view: NSView) {
+            self.view = view
+            eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard let self,
+                      event.keyCode == 53,
+                      let window = self.view?.window,
+                      event.window === window else {
+                    return event
+                }
+                self.onEscape()
+                return nil
+            }
+        }
+
+        func removeEventMonitor() {
+            guard let eventMonitor else { return }
+            NSEvent.removeMonitor(eventMonitor)
+            self.eventMonitor = nil
+        }
     }
 }
 
