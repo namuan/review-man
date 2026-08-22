@@ -22,6 +22,10 @@ final class ReviewShortcutPreferencesTests: XCTestCase {
             preferences.shortcut(for: .toggleSidebar),
             ReviewShortcut(key: "s", modifiers: [.command, .control])
         )
+        XCTAssertEqual(
+            preferences.shortcut(for: .findCanvasNode),
+            ReviewShortcut(key: "f", modifiers: [.command, .shift])
+        )
     }
 
     func testSelectionPersistsAcrossInstances() {

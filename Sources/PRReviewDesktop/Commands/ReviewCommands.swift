@@ -140,6 +140,17 @@ public struct ReviewCommands: Commands {
         }
 
         CommandMenu("Canvas") {
+            Button("Find File or Folder…") {
+                NotificationCenter.default.post(
+                    name: .reviewCanvasSearchRequest,
+                    object: focusedStore
+                )
+            }
+            .keyboardShortcut(shortcutPreferences.shortcut(for: .findCanvasNode).keyboardShortcut)
+            .disabled(focusedStore == nil)
+
+            Divider()
+
             Button("Zoom In") {
                 NotificationCenter.default.post(
                     name: .reviewCanvasZoomInRequest,
@@ -277,6 +288,7 @@ public extension Notification.Name {
     static let reviewDiffPresentationRequest = Notification.Name("review.diffPresentation")
     static let reviewCollapseAllFoldersRequest = Notification.Name("review.collapseAllFolders")
     static let reviewExpandAllFoldersRequest = Notification.Name("review.expandAllFolders")
+    static let reviewCanvasSearchRequest = Notification.Name("review.canvasSearch")
     static let reviewCanvasZoomInRequest = Notification.Name("review.canvasZoomIn")
     static let reviewCanvasZoomOutRequest = Notification.Name("review.canvasZoomOut")
     static let reviewCanvasResetZoomRequest = Notification.Name("review.canvasResetZoom")

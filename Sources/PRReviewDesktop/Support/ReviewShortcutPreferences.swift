@@ -87,6 +87,7 @@ public struct ReviewShortcut: Codable, Equatable {
 public enum ReviewShortcutCommand: String, CaseIterable, Identifiable {
     case toggleDiffLayout
     case toggleSidebar
+    case findCanvasNode
 
     public var id: String { rawValue }
 
@@ -94,6 +95,7 @@ public enum ReviewShortcutCommand: String, CaseIterable, Identifiable {
         switch self {
         case .toggleDiffLayout: "Toggle Diff Layout"
         case .toggleSidebar: "Toggle Sidebar"
+        case .findCanvasNode: "Find File or Folder"
         }
     }
 
@@ -103,6 +105,8 @@ public enum ReviewShortcutCommand: String, CaseIterable, Identifiable {
             ReviewShortcut(key: "d", modifiers: [.command, .control, .option])
         case .toggleSidebar:
             ReviewShortcut(key: "s", modifiers: [.command, .control])
+        case .findCanvasNode:
+            ReviewShortcut(key: "f", modifiers: [.command, .shift])
         }
     }
 }

@@ -99,6 +99,11 @@ public struct ChangeCanvasView: View {
     /// This regular @State survives the disabled period, so it is the source
     /// used to restore focus when returning to the canvas.
     @State private var lastFocusedNodeID: String?
+    @State private var isSearchPresented = false
+    @State private var searchQuery = ""
+    @State private var selectedSearchResultIndex = 0
+    @State private var searchHighlightedNodeID: String?
+    @FocusState private var isSearchFieldFocused: Bool
 
     public static func clampedZoom(_ value: CGFloat) -> CGFloat {
         min(maximumZoom, max(minimumZoom, value))
@@ -147,6 +152,11 @@ public struct ChangeCanvasView: View {
                     ZStack(alignment: .topLeading) {
                         canvasScroll
                     }
+                    .overlay(alignment: .top) {
+                        if isSearchPresented {
+                            canvasSearchOverlay
+                        }
+                    }
                     .onAppear {
                         viewportSize = geometry.size
                         AppLog.info("canvas", "CANVAS_APPEAR files=\(files.count) viewport=\(geometry.size) \(canvasDiagnosticContext())")
@@ -184,6 +194,10 @@ public struct ChangeCanvasView: View {
             }
             .onChange(of: store.review?.pr?.headRefOid) { _ in
                 prepareInitialCanvas(in: CanvasTree.build(from: files))
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .reviewCanvasSearchRequest)) { note in
+                guard showCanvas, targetsThisStore(note) else { return }
+                presentCanvasSearch()
             }
             .onReceive(NotificationCenter.default.publisher(for: .reviewCanvasCollapseFolderRequest)) { note in
                 guard showCanvas, targetsThisStore(note) else { return }
@@ -230,6 +244,15 @@ public struct ChangeCanvasView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
+
+            Button {
+                presentCanvasSearch()
+            } label: {
+                Image(systemName: "magnifyingglass")
+            }
+            .buttonStyle(.borderless)
+            .help("Find a file or folder")
+            .accessibilityLabel("Find a file or folder")
 
             Divider()
                 .frame(height: 18)
@@ -333,13 +356,15 @@ public struct ChangeCanvasView: View {
                 // reflow until another zoom forced a new hit-test map.
                 CanvasTreeLayout(frames: nodeFrames) {
                     ForEach(Array(tree.nodes.enumerated()), id: \.element.id) { index, node in
-                        treeNodeView(
+                        let isHighlighted = highlightedNodeID == node.id
+                        let nodeView = treeNodeView(
                             node: node,
                             descendantFileCount: tree.subtreeFileCounts[index],
                             size: plan.frames[index].size,
-                            zoom: zoom
+                            zoom: zoom,
+                            isHighlighted: isHighlighted
                         )
-                        .id(canvasScrollID(node.id))
+                        nodeView.id(canvasScrollID(node.id))
                     }
                 }
                 .frame(width: boardSize.width, height: boardSize.height)
@@ -401,7 +426,8 @@ public struct ChangeCanvasView: View {
         node: CanvasTree.Node,
         descendantFileCount: Int,
         size: CGSize,
-        zoom: CGFloat
+        zoom: CGFloat,
+        isHighlighted: Bool
     ) -> some View {
         if node.isFolder {
             let isCollapsed = collapsedFolderIDs.contains(node.id)
@@ -415,7 +441,8 @@ public struct ChangeCanvasView: View {
                     descendantFileCount: descendantFileCount,
                     isCollapsed: isCollapsed,
                     size: size,
-                    zoom: zoom
+                    zoom: zoom,
+                    isHighlighted: isHighlighted
                 )
             }
             .buttonStyle(.plain)
@@ -429,7 +456,13 @@ public struct ChangeCanvasView: View {
                 setCanvasFocus(node.id)
                 open(file)
             } label: {
-                TreeFileChip(store: store, file: file, size: size, zoom: zoom)
+                TreeFileChip(
+                    store: store,
+                    file: file,
+                    size: size,
+                    zoom: zoom,
+                    isHighlighted: isHighlighted
+                )
             }
             .buttonStyle(.plain)
             // The Button is the hover target, so its help must carry the path;
@@ -446,6 +479,77 @@ public struct ChangeCanvasView: View {
             .focused($focusedNodeID, equals: node.id)
             .onMoveCommand(perform: handleCanvasMove)
         }
+    }
+
+    private var highlightedNodeID: String? {
+        searchHighlightedNodeID ?? lastFocusedNodeID
+    }
+
+    private var searchResults: [CanvasTree.Node] {
+        CanvasSearch.results(for: searchQuery, in: CanvasTree.build(from: files))
+    }
+
+    private var selectedSearchResult: CanvasTree.Node? {
+        guard searchResults.indices.contains(selectedSearchResultIndex) else { return nil }
+        return searchResults[selectedSearchResultIndex]
+    }
+
+    private var canvasSearchOverlay: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 9) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField("Find a file or folder", text: $searchQuery)
+                    .textFieldStyle(.plain)
+                    .focused($isSearchFieldFocused)
+                    .onSubmit(commitCanvasSearch)
+                Button(action: dismissCanvasSearch) {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("Close canvas search")
+            }
+
+            if let result = selectedSearchResult {
+                HStack(spacing: 6) {
+                    Image(systemName: result.isFolder ? "folder.fill" : "doc.fill")
+                        .foregroundStyle(result.isFolder ? .orange : .secondary)
+                    Text(result.path.isEmpty ? "Root" : result.path)
+                        .lineLimit(1)
+                    Spacer()
+                    Text("\(selectedSearchResultIndex + 1) of \(searchResults.count)")
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+                .font(.caption)
+            } else if !searchQuery.isEmpty {
+                Text("No matching files or folders")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Type a name or path to focus it in the canvas")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(10)
+        .frame(width: 420, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(Color.primary.opacity(0.12))
+        }
+        .shadow(color: .black.opacity(0.18), radius: 10, y: 4)
+        .padding(.top, 12)
+        .padding(.horizontal, 12)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("canvas-search-overlay")
+        .onChange(of: searchQuery) { _ in
+            selectedSearchResultIndex = 0
+            focusSelectedSearchResult()
+        }
+        .onExitCommand(perform: dismissCanvasSearch)
     }
 
     /// Elbow connectors between parent folders and their children, drawn in
@@ -497,6 +601,53 @@ public struct ChangeCanvasView: View {
 
     private func resetZoom() {
         zoom = Self.defaultZoom
+    }
+
+    private func presentCanvasSearch() {
+        isSearchPresented = true
+        searchQuery = ""
+        selectedSearchResultIndex = 0
+        searchHighlightedNodeID = nil
+        DispatchQueue.main.async {
+            isSearchFieldFocused = true
+        }
+    }
+
+    private func dismissCanvasSearch() {
+        isSearchPresented = false
+        isSearchFieldFocused = false
+        searchHighlightedNodeID = nil
+    }
+
+    private func commitCanvasSearch() {
+        guard let result = selectedSearchResult else {
+            dismissCanvasSearch()
+            return
+        }
+        let nodeID = result.id
+        dismissCanvasSearch()
+        setCanvasFocus(nil)
+        DispatchQueue.main.async {
+            setCanvasFocus(nodeID)
+            if let view = focusTarget.view, let window = view.window {
+                window.makeFirstResponder(view)
+            }
+            scrollToNode(nodeID)
+        }
+    }
+
+    private func focusSelectedSearchResult() {
+        guard let result = selectedSearchResult else {
+            searchHighlightedNodeID = nil
+            return
+        }
+        let tree = CanvasTree.build(from: files)
+        collapsedFolderIDs.subtract(tree.ancestorFolderIDs(of: result.id))
+        searchHighlightedNodeID = result.id
+        DispatchQueue.main.async {
+            guard searchHighlightedNodeID == result.id else { return }
+            scrollToNode(result.id)
+        }
     }
 
     private func toggleFolder(_ node: CanvasTree.Node, in tree: CanvasTree) {
@@ -885,6 +1036,20 @@ struct CanvasTree: Equatable {
         )
     }
 
+    func ancestorFolderIDs(of nodeID: String) -> Set<String> {
+        guard var index = nodes.firstIndex(where: { $0.id == nodeID }) else {
+            return []
+        }
+        var ancestorIDs: Set<String> = []
+        while let parent = parents[index] {
+            index = parent
+            if nodes[index].isFolder {
+                ancestorIDs.insert(nodes[index].id)
+            }
+        }
+        return ancestorIDs
+    }
+
     /// Folder IDs that are direct children of `nodeID`.
     func childFolderIDs(of nodeID: String) -> Set<String> {
         guard let parentIndex = nodes.firstIndex(where: { $0.id == nodeID }) else {
@@ -959,6 +1124,17 @@ struct CanvasTree: Equatable {
             depths: visibleDepths,
             subtreeFileCounts: visibleSubtreeCounts
         )
+    }
+}
+
+enum CanvasSearch {
+    static func results(for query: String, in tree: CanvasTree) -> [CanvasTree.Node] {
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedQuery.isEmpty else { return [] }
+        return tree.nodes.filter {
+            $0.name.localizedStandardContains(trimmedQuery)
+                || $0.path.localizedStandardContains(trimmedQuery)
+        }
     }
 }
 
@@ -1266,6 +1442,7 @@ private struct TreeFolderChip: View {
     let isCollapsed: Bool
     let size: CGSize
     let zoom: CGFloat
+    let isHighlighted: Bool
 
     var body: some View {
         HStack(spacing: 8 * zoom) {
@@ -1291,7 +1468,10 @@ private struct TreeFolderChip: View {
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10 * zoom))
         .overlay {
             RoundedRectangle(cornerRadius: 10 * zoom)
-                .stroke(Color.orange.opacity(0.35), lineWidth: max(zoom, 0.5))
+                .stroke(
+                    isHighlighted ? Color.accentColor : Color.orange.opacity(0.35),
+                    lineWidth: (isHighlighted ? 2 : 1) * max(zoom, 0.5)
+                )
         }
         .shadow(color: Color.black.opacity(0.07), radius: 4 * zoom, y: 2 * zoom)
         .contentShape(RoundedRectangle(cornerRadius: 10 * zoom))
@@ -1306,6 +1486,7 @@ private struct TreeFileChip: View {
     let file: DiffFile
     let size: CGSize
     let zoom: CGFloat
+    let isHighlighted: Bool
 
     var body: some View {
         HStack(spacing: 8 * zoom) {
@@ -1336,7 +1517,7 @@ private struct TreeFileChip: View {
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 9 * zoom))
         .overlay {
             RoundedRectangle(cornerRadius: 9 * zoom)
-                .stroke(borderColor, lineWidth: (isSelected ? 2 : 1) * zoom)
+                .stroke(borderColor, lineWidth: (isHighlighted || isSelected ? 2 : 1) * zoom)
         }
         .shadow(color: Color.black.opacity(0.07), radius: 4 * zoom, y: 2 * zoom)
         .contentShape(RoundedRectangle(cornerRadius: 9 * zoom))
@@ -1355,7 +1536,7 @@ private struct TreeFileChip: View {
     }
 
     private var borderColor: Color {
-        isSelected ? .accentColor.opacity(0.8) : Color.gray.opacity(0.22)
+        (isHighlighted || isSelected) ? .accentColor.opacity(0.8) : Color.gray.opacity(0.22)
     }
 
     private var statusColor: Color {
