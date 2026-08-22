@@ -104,6 +104,18 @@ public struct ChangeCanvasView: View {
         min(maximumZoom, max(minimumZoom, value))
     }
 
+    static func fittedZoom(board: CGSize, viewport: CGSize) -> CGFloat? {
+        guard board.width > 0,
+              board.height > 0,
+              viewport.width > 32,
+              viewport.height > 32 else {
+            return nil
+        }
+        let scaleX = (viewport.width - 32) / board.width
+        let scaleY = (viewport.height - 32) / board.height
+        return clampedZoom(min(scaleX, scaleY) * 0.94)
+    }
+
     public init(
         store: ReviewSessionStore,
         files: [DiffFile],
@@ -138,17 +150,16 @@ public struct ChangeCanvasView: View {
                     .onAppear {
                         viewportSize = geometry.size
                         AppLog.info("canvas", "CANVAS_APPEAR files=\(files.count) viewport=\(geometry.size) \(canvasDiagnosticContext())")
-                        // The board preference can arrive before onAppear when
-                        // the first layout beats the appear callback; retry
-                        // the fit once the viewport is known.
-                        if let board = boardSize {
-                            fitInitialZoom(board: board)
-                        }
-                        focusedNodeID = focusedNodeID ?? CanvasTree.build(from: files).nodes.first?.id
-                        if lastFocusedNodeID == nil { lastFocusedNodeID = focusedNodeID }
+                        prepareInitialCanvas(
+                            in: CanvasTree.build(from: files),
+                            viewport: geometry.size
+                        )
                     }
                     .onChange(of: geometry.size) { newSize in
                         viewportSize = newSize
+                        let collapsedTree = CanvasTree.build(from: files)
+                            .hidingDescendants(of: collapsedFolderIDs)
+                        fitInitialZoom(board: treePlan(for: collapsedTree).boardSize, viewport: newSize)
                         AppLog.info("canvas", "CANVAS_VIEWPORT_CHANGE viewport=\(newSize) \(canvasDiagnosticContext())")
                     }
                     .onPreferenceChange(CanvasBoardSizeKey.self) { board in
@@ -172,11 +183,7 @@ public struct ChangeCanvasView: View {
                 }
             }
             .onChange(of: store.review?.pr?.headRefOid) { _ in
-                // A reload/new PR gets a fresh fit-zoom pass and expansion
-                // state must not carry into a coincidentally shaped next tree.
-                didAutoFit = false
-                collapsedFolderIDs = []
-                setCanvasFocus(nil)
+                prepareInitialCanvas(in: CanvasTree.build(from: files))
             }
             .onReceive(NotificationCenter.default.publisher(for: .reviewCanvasCollapseFolderRequest)) { note in
                 guard showCanvas, targetsThisStore(note) else { return }
@@ -661,6 +668,15 @@ public struct ChangeCanvasView: View {
         revealFocusedNodeAfterReflow()
     }
 
+    private func prepareInitialCanvas(in tree: CanvasTree, viewport: CGSize? = nil) {
+        didAutoFit = false
+        let folderIDs = Set(tree.nodes.lazy.filter(\.isFolder).map(\.id))
+        collapsedFolderIDs = folderIDs
+        setCanvasFocus(tree.nodes.first?.id)
+        let collapsedTree = tree.hidingDescendants(of: folderIDs)
+        fitInitialZoom(board: treePlan(for: collapsedTree).boardSize, viewport: viewport)
+    }
+
     private func expandAllFolders() {
         withAnimation(.easeInOut(duration: 0.2)) {
             collapsedFolderIDs.removeAll()
@@ -668,34 +684,29 @@ public struct ChangeCanvasView: View {
         revealFocusedNodeAfterReflow()
     }
 
-    /// Zoom that frames `board` inside `viewport` with a small ocean margin.
-    private func fittedZoom(board: CGSize, viewport: CGSize) -> CGFloat {
-        let scaleX = (viewport.width - 32) / board.width
-        let scaleY = (viewport.height - 32) / board.height
-        return min(scaleX, scaleY) * 0.94
-    }
-
     /// "Fit" button: zooms the tree down (or up) so its bounding box sits
     /// fully inside the viewport with a small ocean margin.
     private func fitToBoard() {
-        guard let board = boardSize, let viewport = viewportSize,
-              board.width > 0, board.height > 0 else {
+        guard let board = boardSize,
+              let viewport = viewportSize,
+              let fittedZoom = Self.fittedZoom(board: board, viewport: viewport) else {
             AppLog.info("canvas", "CANVAS_FIT skipped board=\(String(describing: boardSize)) viewport=\(String(describing: viewportSize))")
             return
         }
-        zoom = Self.clampedZoom(fittedZoom(board: board, viewport: viewport))
+        zoom = fittedZoom
         AppLog.info("canvas", "CANVAS_FIT board=\(board) viewport=\(viewport) zoom=\(zoom)")
     }
 
-    /// Zooms the newly laid-out board down (once) so the whole tree is
-    /// visible without scrolling. Manual zooming afterwards is never
+    /// Fits the newly laid-out board once. Manual zooming afterwards is never
     /// overridden.
-    private func fitInitialZoom(board: CGSize) {
-        guard !didAutoFit, let viewport = viewportSize, board.width > 0, board.height > 0 else { return }
+    private func fitInitialZoom(board: CGSize, viewport: CGSize? = nil) {
+        guard !didAutoFit,
+              let viewport = viewport ?? viewportSize,
+              let fittedZoom = Self.fittedZoom(board: board, viewport: viewport) else {
+            return
+        }
         didAutoFit = true
-        let fit = fittedZoom(board: board, viewport: viewport)
-        guard fit < zoom else { return }
-        zoom = Self.clampedZoom(fit)
+        zoom = fittedZoom
     }
 
     /// Re-applies keyboard focus to the node that was focused before the diff
