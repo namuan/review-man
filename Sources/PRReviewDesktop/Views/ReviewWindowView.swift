@@ -8,7 +8,7 @@ public struct ReviewWindowView: View {
     @ObservedObject public var store: ReviewSessionStore
     @State private var showOpenSheet = false
     @State private var sheetReference = ""
-    @State private var sidebarVisible = true
+    @State private var sidebarVisible = false
     /// One-shot request passed to the sidebar after it is made visible, so
     /// Cmd-F can put the insertion point in its file filter.
     @State private var focusSidebarSearch = false
