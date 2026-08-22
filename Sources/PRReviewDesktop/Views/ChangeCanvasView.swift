@@ -495,7 +495,7 @@ public struct ChangeCanvasView: View {
     }
 
     private var canvasSearchOverlay: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 9) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
@@ -511,18 +511,21 @@ public struct ChangeCanvasView: View {
                 .accessibilityLabel("Close canvas search")
             }
 
-            if let result = selectedSearchResult {
-                HStack(spacing: 6) {
-                    Image(systemName: result.isFolder ? "folder.fill" : "doc.fill")
-                        .foregroundStyle(result.isFolder ? .orange : .secondary)
-                    Text(result.path.isEmpty ? "Root" : result.path)
-                        .lineLimit(1)
+            if !searchResults.isEmpty {
+                HStack {
+                    Text("\(searchResults.count) \(searchResults.count == 1 ? "match" : "matches")")
                     Spacer()
                     Text("\(selectedSearchResultIndex + 1) of \(searchResults.count)")
                         .monospacedDigit()
-                        .foregroundStyle(.secondary)
                 }
                 .font(.caption)
+                .foregroundStyle(.secondary)
+
+                CanvasSearchResultsView(
+                    results: searchResults,
+                    selectedIndex: selectedSearchResultIndex,
+                    onSelect: selectSearchResult
+                )
             } else if !searchQuery.isEmpty {
                 Text("No matching files or folders")
                     .font(.caption)
@@ -536,6 +539,10 @@ public struct ChangeCanvasView: View {
         .padding(10)
         .frame(width: 420, alignment: .leading)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .background {
+            CanvasSearchKeyMonitor(onMove: moveSearchSelection)
+                .allowsHitTesting(false)
+        }
         .overlay {
             RoundedRectangle(cornerRadius: 10)
                 .strokeBorder(Color.primary.opacity(0.12))
@@ -634,6 +641,23 @@ public struct ChangeCanvasView: View {
             }
             scrollToNode(nodeID)
         }
+    }
+
+    private func selectSearchResult(_ index: Int) {
+        guard searchResults.indices.contains(index) else { return }
+        selectedSearchResultIndex = index
+        focusSelectedSearchResult()
+        DispatchQueue.main.async {
+            isSearchFieldFocused = true
+        }
+    }
+
+    private func moveSearchSelection(_ offset: Int) {
+        let resultCount = searchResults.count
+        guard resultCount > 0 else { return }
+        let index = (selectedSearchResultIndex + offset + resultCount) % resultCount
+        selectedSearchResultIndex = index
+        focusSelectedSearchResult()
     }
 
     private func focusSelectedSearchResult() {
@@ -1134,6 +1158,138 @@ enum CanvasSearch {
         return tree.nodes.filter {
             $0.name.localizedStandardContains(trimmedQuery)
                 || $0.path.localizedStandardContains(trimmedQuery)
+        }
+    }
+}
+
+private struct CanvasSearchResultsView: View {
+    let results: [CanvasTree.Node]
+    let selectedIndex: Int
+    let onSelect: (Int) -> Void
+
+    private var selectedNodeID: String? {
+        guard results.indices.contains(selectedIndex) else { return nil }
+        return results[selectedIndex].id
+    }
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.vertical, showsIndicators: results.count > 6) {
+                LazyVStack(spacing: 2) {
+                    ForEach(Array(results.enumerated()), id: \.element.id) { index, result in
+                        let isSelected = index == selectedIndex
+                        Button {
+                            onSelect(index)
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: result.isFolder ? "folder.fill" : "doc.fill")
+                                    .frame(width: 16)
+                                    .foregroundStyle(result.isFolder ? .orange : .secondary)
+
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(result.path.isEmpty ? "Root" : result.name)
+                                        .lineLimit(1)
+                                    if !result.path.isEmpty, result.path != result.name {
+                                        Text(result.path)
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                    }
+                                }
+
+                                Spacer()
+
+                                if isSelected {
+                                    Image(systemName: "return")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .padding(.horizontal, 8)
+                            .frame(height: 40)
+                            .contentShape(Rectangle())
+                            .background(
+                                isSelected ? Color.accentColor.opacity(0.18) : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 6)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .id(result.id)
+                        .accessibilityValue(isSelected ? "Selected" : "")
+                        .accessibilityIdentifier("canvas-search-result-\(result.id)")
+                    }
+                }
+            }
+            .frame(height: CGFloat(min(results.count, 6)) * 42)
+            .onChange(of: selectedNodeID) { nodeID in
+                guard let nodeID else { return }
+                proxy.scrollTo(nodeID, anchor: .center)
+            }
+        }
+    }
+}
+
+private struct CanvasSearchKeyMonitor: NSViewRepresentable {
+    let onMove: (Int) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onMove: onMove)
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        view.setAccessibilityElement(false)
+        context.coordinator.install(on: view)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.onMove = onMove
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.removeEventMonitor()
+    }
+
+    final class Coordinator {
+        var onMove: (Int) -> Void
+        private weak var view: NSView?
+        private var eventMonitor: Any?
+
+        init(onMove: @escaping (Int) -> Void) {
+            self.onMove = onMove
+        }
+
+        deinit {
+            removeEventMonitor()
+        }
+
+        func install(on view: NSView) {
+            self.view = view
+            eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard let self,
+                      let window = self.view?.window,
+                      event.window === window,
+                      event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty else {
+                    return event
+                }
+                switch event.keyCode {
+                case 125:
+                    self.onMove(1)
+                    return nil
+                case 126:
+                    self.onMove(-1)
+                    return nil
+                default:
+                    return event
+                }
+            }
+        }
+
+        func removeEventMonitor() {
+            guard let eventMonitor else { return }
+            NSEvent.removeMonitor(eventMonitor)
+            self.eventMonitor = nil
         }
     }
 }
