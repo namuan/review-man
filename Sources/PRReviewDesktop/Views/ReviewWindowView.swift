@@ -18,6 +18,8 @@ public struct ReviewWindowView: View {
     @State private var canvasZoom = ChangeCanvasView.defaultZoom
     @State private var diffPresentation: DiffPresentation = .unified
     @State private var showCloseWarning = false
+    /// Editable copy of the failed reference shown in the error state.
+    @State private var failureReference = ""
 
     public init(store: ReviewSessionStore) {
         self.store = store
@@ -285,15 +287,14 @@ public struct ReviewWindowView: View {
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .accessibilityIdentifier("error-message")
-            HStack(spacing: 12) {
-                if let reference = store.lastRequestedReference, reference != "demo" {
-                    Button("Try Again") { store.open(reference: reference) }
-                } else {
-                    Button("Try Again") { store.openDemo() }
-                }
-                Button("Open a Different PR") { store.cancelLoad() }
-            }
-            .padding(.top, 4)
+            TextField("https://github.com/owner/repo/pull/123 or owner/repo#123", text: $failureReference)
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 420)
+                .onSubmit { retryFromFailure() }
+                .accessibilityIdentifier("error-reference-field")
+            Button("Try Again") { retryFromFailure() }
+                .disabled(failureReference.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .accessibilityIdentifier("try-again-button")
             DependencyStatusCard(store: store)
                 .frame(maxWidth: 420)
         }
@@ -301,6 +302,17 @@ public struct ReviewWindowView: View {
         .frame(maxWidth: 520)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("error-state")
+        .onAppear {
+            if let reference = store.lastRequestedReference, reference != "demo" {
+                failureReference = reference
+            }
+        }
+    }
+
+    private func retryFromFailure() {
+        let trimmed = failureReference.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        store.open(reference: trimmed)
     }
 
     private var loadedShell: some View {
