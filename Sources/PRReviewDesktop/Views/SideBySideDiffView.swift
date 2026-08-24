@@ -46,7 +46,10 @@ struct SideBySideDiffView: View {
             .frame(width: geometry.size.width, height: geometry.size.height, alignment: .leading)
         }
         .accessibilityIdentifier("side-by-side-diff-pane")
-        .background(SideBySideEscapeMonitor(onEscape: handleExitCommand))
+        .background(SideBySideKeyboardMonitor(
+            onEscape: handleExitCommand,
+            onPageScroll: { direction in scrollCoordinator.scrollByPage(direction) }
+        ))
     }
 
     /// Mirror the AppKit unified surface: Escape closes an active editor or
@@ -57,11 +60,16 @@ struct SideBySideDiffView: View {
     }
 }
 
-private struct SideBySideEscapeMonitor: NSViewRepresentable {
+/// Handles keyboard surface commands for the side-by-side panes: Escape exits
+/// toward the Canvas, and Page Up / Page Down page both columns together.
+/// Scrolling goes through the shared coordinator so it works regardless of
+/// which view currently holds keyboard focus.
+private struct SideBySideKeyboardMonitor: NSViewRepresentable {
     let onEscape: () -> Void
+    let onPageScroll: (CGFloat) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onEscape: onEscape)
+        Coordinator(onEscape: onEscape, onPageScroll: onPageScroll)
     }
 
     func makeNSView(context: Context) -> NSView {
@@ -73,6 +81,7 @@ private struct SideBySideEscapeMonitor: NSViewRepresentable {
 
     func updateNSView(_ nsView: NSView, context: Context) {
         context.coordinator.onEscape = onEscape
+        context.coordinator.onPageScroll = onPageScroll
     }
 
     static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
@@ -81,11 +90,13 @@ private struct SideBySideEscapeMonitor: NSViewRepresentable {
 
     final class Coordinator {
         var onEscape: () -> Void
+        var onPageScroll: (CGFloat) -> Void
         private weak var view: NSView?
         private var eventMonitor: Any?
 
-        init(onEscape: @escaping () -> Void) {
+        init(onEscape: @escaping () -> Void, onPageScroll: @escaping (CGFloat) -> Void) {
             self.onEscape = onEscape
+            self.onPageScroll = onPageScroll
         }
 
         deinit {
@@ -96,13 +107,28 @@ private struct SideBySideEscapeMonitor: NSViewRepresentable {
             self.view = view
             eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
                 guard let self,
-                      event.keyCode == 53,
                       let window = self.view?.window,
                       event.window === window else {
                     return event
                 }
-                self.onEscape()
-                return nil
+                // Leave text entry (draft editors, search fields) untouched;
+                // Page keys keep their native caret-movement meaning there.
+                if window.firstResponder is NSTextView, event.keyCode != 53 {
+                    return event
+                }
+                switch event.keyCode {
+                case 53:
+                    self.onEscape()
+                    return nil
+                case 121:
+                    self.onPageScroll(1)
+                    return nil
+                case 116:
+                    self.onPageScroll(-1)
+                    return nil
+                default:
+                    return event
+                }
             }
         }
 
@@ -376,6 +402,20 @@ private final class SideBySideScrollCoordinator {
         if let oldScrollView {
             synchronize(from: .old, source: oldScrollView)
         }
+    }
+
+    /// Pages the panes by one viewport height. `direction` is +1 (down) or
+    /// -1 (up). The bounds-change notification fired here makes the
+    /// coordinator mirror the movement onto the opposite pane.
+    func scrollByPage(_ direction: CGFloat) {
+        guard let source = oldScrollView ?? newScrollView else { return }
+        let clip = source.contentView
+        let contentHeight = source.documentView?.frame.size.height ?? 0
+        let viewport = clip.bounds.size.height
+        guard contentHeight > viewport else { return }
+        let newY = min(max(0, clip.bounds.origin.y + direction * viewport), contentHeight - viewport)
+        clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: newY))
+        source.reflectScrolledClipView(clip)
     }
 
     func unregister(_ scrollView: NSScrollView, for side: SideBySideDiffLineCell.Side) {
