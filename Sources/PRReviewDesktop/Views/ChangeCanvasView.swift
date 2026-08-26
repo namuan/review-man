@@ -336,6 +336,7 @@ public struct ChangeCanvasView: View {
         let tree = CanvasTree.build(from: files)
             .hidingDescendants(of: collapsedFolderIDs)
         let plan = treePlan(for: tree)
+        let commentCountsByPath = self.commentCountsByPath
         let boardSize = CGSize(
             width: plan.boardSize.width * zoom,
             height: plan.boardSize.height * zoom
@@ -362,6 +363,7 @@ public struct ChangeCanvasView: View {
                             descendantFileCount: tree.subtreeFileCounts[index],
                             size: plan.frames[index].size,
                             zoom: zoom,
+                            commentCount: commentCountsByPath[node.path, default: 0],
                             isHighlighted: isHighlighted
                         )
                         nodeView.id(canvasScrollID(node.id))
@@ -406,7 +408,10 @@ public struct ChangeCanvasView: View {
                     descendantFileCount: tree.subtreeFileCounts[index]
                 )
             } else if let file = node.file {
-                TreeMetrics.fileSize(for: file)
+                TreeMetrics.fileSize(
+                    for: file,
+                    commentCount: commentCountsByPath[file.path, default: 0]
+                )
             } else {
                 TreeMetrics.fileSize(for: nil)
             }
@@ -427,6 +432,7 @@ public struct ChangeCanvasView: View {
         descendantFileCount: Int,
         size: CGSize,
         zoom: CGFloat,
+        commentCount: Int,
         isHighlighted: Bool
     ) -> some View {
         if node.isFolder {
@@ -461,6 +467,7 @@ public struct ChangeCanvasView: View {
                     file: file,
                     size: size,
                     zoom: zoom,
+                    commentCount: commentCount,
                     isHighlighted: isHighlighted
                 )
             }
@@ -475,7 +482,7 @@ public struct ChangeCanvasView: View {
                 }
             }
             .accessibilityIdentifier("canvas-file-\(file.path)")
-            .accessibilityLabel(canvasAccessibilityLabel(for: file))
+            .accessibilityLabel(canvasAccessibilityLabel(for: file, commentCount: commentCount))
             .focused($focusedNodeID, equals: node.id)
             .onMoveCommand(perform: handleCanvasMove)
         }
@@ -937,9 +944,16 @@ public struct ChangeCanvasView: View {
         store.review?.viewed.contains(file.path) == true
     }
 
-    private func canvasAccessibilityLabel(for file: DiffFile) -> String {
+    private var commentCountsByPath: [String: Int] {
+        Dictionary(uniqueKeysWithValues: (store.review?.sidebarItems ?? []).map {
+            ($0.path, $0.threadCount)
+        })
+    }
+
+    private func canvasAccessibilityLabel(for file: DiffFile, commentCount: Int) -> String {
+        let comments = commentCount > 0 ? ", \(commentCount) comments" : ""
         let viewed = fileIsViewed(file) ? ", viewed" : ""
-        return "\(file.path), \(file.additions) additions, \(file.deletions) deletions\(viewed)"
+        return "\(file.path), \(file.additions) additions, \(file.deletions) deletions\(comments)\(viewed)"
     }
 
     private func canvasDiagnosticContext() -> String {
@@ -1574,14 +1588,21 @@ private enum TreeMetrics {
         return CGSize(width: max(folderMinimumWidth, nameWidth + countWidth + chromeWidth), height: folderHeight)
     }
 
-    static func fileSize(for file: DiffFile?) -> CGSize {
+    static func fileSize(for file: DiffFile?, commentCount: Int = 0) -> CGSize {
         let fileName = file?.path.split(separator: "/").last.map(String.init) ?? ""
         let nameWidth = textWidth(fileName, font: .monospacedSystemFont(ofSize: 12, weight: .semibold))
         let counts = file.map { "+\($0.additions) −\($0.deletions)" } ?? ""
         let countWidth = textWidth(counts, font: .monospacedSystemFont(ofSize: 10, weight: .regular))
+        let commentBadge = commentCount > 0 ? "● \(commentCount)" : ""
+        let commentBadgeWidth = commentCount > 0
+            ? textWidth(commentBadge, font: .systemFont(ofSize: 10, weight: .regular)) + 8
+            : 0
         // Status, inter-item gaps, a viewed-mark reservation, and horizontal padding.
         let chromeWidth: CGFloat = 18 + 8 + 4 + 20 + 20
-        return CGSize(width: max(fileMinimumWidth, nameWidth + countWidth + chromeWidth), height: fileHeight)
+        return CGSize(
+            width: max(fileMinimumWidth, nameWidth + countWidth + commentBadgeWidth + chromeWidth),
+            height: fileHeight
+        )
     }
 
     private static func textWidth(_ text: String, font: NSFont) -> CGFloat {
@@ -1642,6 +1663,7 @@ private struct TreeFileChip: View {
     let file: DiffFile
     let size: CGSize
     let zoom: CGFloat
+    let commentCount: Int
     let isHighlighted: Bool
 
     var body: some View {
@@ -1661,6 +1683,13 @@ private struct TreeFileChip: View {
             Text("+\(file.additions) −\(file.deletions)")
                 .font(.system(size: 10 * zoom, design: .monospaced))
                 .foregroundStyle(.secondary)
+
+            if commentCount > 0 {
+                Text("● \(commentCount)")
+                    .font(.system(size: 10 * zoom))
+                    .foregroundStyle(.purple)
+                    .accessibilityLabel("\(commentCount) comments")
+            }
 
             if fileIsViewed {
                 Image(systemName: "checkmark.circle.fill")
