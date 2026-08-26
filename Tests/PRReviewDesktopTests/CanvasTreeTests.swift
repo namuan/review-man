@@ -50,6 +50,23 @@ final class CanvasTreeTests: XCTestCase {
         XCTAssertEqual(tree.subtreeFileCounts, [3, 2, 2, 1, 1, 1, 1])
     }
 
+    func testSubtreeCommentCountsAccumulateToAncestorFolders() {
+        let tree = CanvasTree.build(from: [
+            file("Sources/App/Engine.swift"),
+            file("Sources/App/Views/Home.swift"),
+            file("README.md"),
+        ])
+
+        XCTAssertEqual(
+            tree.subtreeCommentCounts(byPath: [
+                "Sources/App/Engine.swift": 1,
+                "Sources/App/Views/Home.swift": 2,
+                "README.md": 4,
+            ]),
+            [7, 3, 3, 2, 2, 1, 4]
+        )
+    }
+
     func testFilesSortedWithinFolder() {
         let tree = CanvasTree.build(from: [
             file("Sources/z-last.swift"),

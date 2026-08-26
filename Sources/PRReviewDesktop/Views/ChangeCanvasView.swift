@@ -335,8 +335,9 @@ public struct ChangeCanvasView: View {
     private var canvasScroll: some View {
         let tree = CanvasTree.build(from: files)
             .hidingDescendants(of: collapsedFolderIDs)
-        let plan = treePlan(for: tree)
         let commentCountsByPath = self.commentCountsByPath
+        let descendantCommentCounts = descendantCommentCounts(for: tree)
+        let plan = treePlan(for: tree, descendantCommentCounts: descendantCommentCounts)
         let boardSize = CGSize(
             width: plan.boardSize.width * zoom,
             height: plan.boardSize.height * zoom
@@ -361,6 +362,7 @@ public struct ChangeCanvasView: View {
                         let nodeView = treeNodeView(
                             node: node,
                             descendantFileCount: tree.subtreeFileCounts[index],
+                            descendantCommentCount: descendantCommentCounts[index],
                             size: plan.frames[index].size,
                             zoom: zoom,
                             commentCount: commentCountsByPath[node.path, default: 0],
@@ -400,12 +402,18 @@ public struct ChangeCanvasView: View {
 
     /// Node dimensions include each label's measured width, keeping every
     /// file and folder name visible while preserving a pure layout plan.
-    private func treePlan(for tree: CanvasTree) -> TreePlan {
+    private func treePlan(
+        for tree: CanvasTree,
+        descendantCommentCounts: [Int]? = nil
+    ) -> TreePlan {
+        let descendantCommentCounts = descendantCommentCounts
+            ?? self.descendantCommentCounts(for: tree)
         let sizes = tree.nodes.enumerated().map { index, node in
             if node.isFolder {
                 TreeMetrics.folderSize(
                     for: node.name,
-                    descendantFileCount: tree.subtreeFileCounts[index]
+                    descendantFileCount: tree.subtreeFileCounts[index],
+                    commentCount: descendantCommentCounts[index]
                 )
             } else if let file = node.file {
                 TreeMetrics.fileSize(
@@ -430,6 +438,7 @@ public struct ChangeCanvasView: View {
     private func treeNodeView(
         node: CanvasTree.Node,
         descendantFileCount: Int,
+        descendantCommentCount: Int,
         size: CGSize,
         zoom: CGFloat,
         commentCount: Int,
@@ -445,6 +454,7 @@ public struct ChangeCanvasView: View {
                 TreeFolderChip(
                     node: node,
                     descendantFileCount: descendantFileCount,
+                    descendantCommentCount: descendantCommentCount,
                     isCollapsed: isCollapsed,
                     size: size,
                     zoom: zoom,
@@ -454,7 +464,7 @@ public struct ChangeCanvasView: View {
             .buttonStyle(.plain)
             .help(isCollapsed ? "Expand folder" : "Collapse folder")
             .accessibilityIdentifier("canvas-folder-\(node.path)")
-            .accessibilityLabel("\(isCollapsed ? "Expand" : "Collapse") \(node.name) folder, \(descendantFileCount) \(descendantFileCount == 1 ? "file" : "files")")
+            .accessibilityLabel("\(isCollapsed ? "Expand" : "Collapse") \(node.name) folder, \(descendantFileCount) \(descendantFileCount == 1 ? "file" : "files")\(descendantCommentCount > 0 ? ", \(descendantCommentCount) comments" : "")")
             .focused($focusedNodeID, equals: node.id)
             .onMoveCommand(perform: handleCanvasMove)
         } else if let file = node.file {
@@ -950,6 +960,15 @@ public struct ChangeCanvasView: View {
         })
     }
 
+    private func descendantCommentCounts(for tree: CanvasTree) -> [Int] {
+        let fullTree = CanvasTree.build(from: files)
+        let fullCounts = fullTree.subtreeCommentCounts(byPath: commentCountsByPath)
+        let countsByNodeID = Dictionary(
+            uniqueKeysWithValues: zip(fullTree.nodes.map(\.id), fullCounts)
+        )
+        return tree.nodes.map { countsByNodeID[$0.id, default: 0] }
+    }
+
     private func canvasAccessibilityLabel(for file: DiffFile, commentCount: Int) -> String {
         let comments = commentCount > 0 ? ", \(commentCount) comments" : ""
         let viewed = fileIsViewed(file) ? ", viewed" : ""
@@ -1072,6 +1091,18 @@ struct CanvasTree: Equatable {
             depths: depths,
             subtreeFileCounts: subtreeCounts
         )
+    }
+
+    func subtreeCommentCounts(byPath commentCountsByPath: [String: Int]) -> [Int] {
+        var counts = nodes.map { node in
+            node.isFolder ? 0 : commentCountsByPath[node.path, default: 0]
+        }
+        for index in stride(from: nodes.count - 1, through: 0, by: -1) {
+            if let parent = parents[index] {
+                counts[parent] += counts[index]
+            }
+        }
+        return counts
     }
 
     func ancestorFolderIDs(of nodeID: String) -> Set<String> {
@@ -1580,12 +1611,24 @@ private enum TreeMetrics {
     static let rowGap: CGFloat = 24
     static let padding: CGFloat = 40
 
-    static func folderSize(for name: String, descendantFileCount: Int) -> CGSize {
+    static func folderSize(
+        for name: String,
+        descendantFileCount: Int,
+        commentCount: Int = 0
+    ) -> CGSize {
         let nameWidth = textWidth(name, font: .systemFont(ofSize: 12, weight: .semibold))
         let countWidth = textWidth("\(descendantFileCount)", font: .monospacedSystemFont(ofSize: 10, weight: .bold)) + 12
+        let commentBadge = commentCount > 0 ? "● \(commentCount)" : ""
+        let commentBadgeWidth = textWidth(
+            commentBadge,
+            font: .systemFont(ofSize: 10, weight: .regular)
+        )
         // Chevron, icon, inter-item gaps, flexible gap, and horizontal padding.
-        let chromeWidth: CGFloat = 10 + 12 + 8 + 8 + 4 + 24
-        return CGSize(width: max(folderMinimumWidth, nameWidth + countWidth + chromeWidth), height: folderHeight)
+        let chromeWidth: CGFloat = commentCount > 0 ? 102 : 94
+        return CGSize(
+            width: max(folderMinimumWidth, nameWidth + countWidth + commentBadgeWidth + chromeWidth),
+            height: folderHeight
+        )
     }
 
     static func fileSize(for file: DiffFile?, commentCount: Int = 0) -> CGSize {
@@ -1616,6 +1659,7 @@ private enum TreeMetrics {
 private struct TreeFolderChip: View {
     let node: CanvasTree.Node
     let descendantFileCount: Int
+    let descendantCommentCount: Int
     let isCollapsed: Bool
     let size: CGSize
     let zoom: CGFloat
@@ -1636,9 +1680,20 @@ private struct TreeFolderChip: View {
             Spacer(minLength: 4 * zoom)
             Text("\(descendantFileCount)")
                 .font(.system(size: 10 * zoom, weight: .bold, design: .monospaced))
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: true, vertical: false)
+                .layoutPriority(1)
                 .padding(.horizontal, 6 * zoom)
                 .padding(.vertical, zoom)
                 .background(Color.primary.opacity(0.08), in: Capsule())
+            if descendantCommentCount > 0 {
+                Text("● \(descendantCommentCount)")
+                    .font(.system(size: 10 * zoom))
+                    .foregroundStyle(.purple)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .layoutPriority(1)
+                    .accessibilityLabel("\(descendantCommentCount) comments")
+            }
         }
         .padding(.horizontal, 12 * zoom)
         .frame(width: size.width * zoom, height: size.height * zoom)
