@@ -63,5 +63,6 @@ let package = Package(
             dependencies: ["PRReviewKit", "PRReviewDesktop"],
             path: "Tests/PRReviewDesktopTests"
         ),
-    ]
+    ],
+    swiftLanguageModes: [.v5]
 )
