@@ -39,11 +39,7 @@ struct SwiftFlowCanvasSpikeView: View {
             SwiftFlow.SwiftFlow(
                 nodes: nodes,
                 edges: edges,
-                swiftFlowInstance: flowInstance,
                 onNodesChange: { changes in
-                    // Positions are intentionally read-only in the review
-                    // canvas, but selection/focus changes still belong to the
-                    // graph engine.
                     nodes = applyNodeChanges(changes, nodes: nodes)
                 },
                 onEdgesChange: { _ in },
@@ -57,10 +53,11 @@ struct SwiftFlowCanvasSpikeView: View {
                 zoomOnPinch: true,
                 zoomOnDoubleClick: false,
                 fitView: true,
-                onNodeClick: { node in activate(node.data) },
                 onViewportChange: { viewport in
                     zoom = ChangeCanvasView.clampedZoom(viewport.zoom)
-                }
+                },
+                onNodeClick: { node in activate(node.data) },
+                swiftFlowInstance: flowInstance
             ) { node in
                 nodeView(node.data)
             } overlay: {
