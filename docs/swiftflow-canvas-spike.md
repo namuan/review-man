@@ -8,6 +8,8 @@ This branch evaluates replacing the custom change-canvas rendering/viewport engi
 
 The first spike intentionally keeps the deterministic `TreePlan` positions. That isolates renderer/viewport performance from a simultaneous layout-algorithm change and makes an A/B comparison meaningful. If the renderer wins, a follow-up can benchmark SwiftFlow's `.tree(direction: .leftToRight, ...)` auto-layout and remove `TreePlan` too.
 
+The production canvas remains the default. Launch the app with `--swiftflow-canvas` to select the spike for comparison.
+
 ## Toolchain note
 
 SwiftFlow 0.1.1 requires Swift 6.1. The package manifest is therefore raised from Swift tools 5.9 to 6.1 on this spike branch. This is the largest adoption constraint and should be treated as part of the evaluation rather than silently folded into production.

@@ -1,6 +1,13 @@
+import Foundation
 import SwiftUI
 import SwiftFlow
 import PRReviewKit
+
+enum SwiftFlowCanvasSpike {
+    static var isEnabled: Bool {
+        ProcessInfo.processInfo.arguments.contains("--swiftflow-canvas")
+    }
+}
 
 /// SwiftFlow-backed rendering spike for the change canvas.
 ///
@@ -26,45 +33,14 @@ struct SwiftFlowCanvasSpikeView: View {
     @Binding var zoom: CGFloat
 
     @State private var collapsedFolderIDs: Set<String> = []
-    @State private var nodes: [SwiftFlow.Node<NodeData>] = []
+    @State private var nodes: [Node<NodeData>] = []
     @State private var edges: [FlowEdge<EmptyEdgeData>] = []
     @StateObject private var flowInstance = SwiftFlowInstance()
 
     private var fullTree: CanvasTree { CanvasTree.build(from: files) }
 
     var body: some View {
-        VStack(spacing: 0) {
-            toolbar
-            Divider()
-            SwiftFlow.SwiftFlow(
-                nodes: nodes,
-                edges: edges,
-                onNodesChange: { changes in
-                    nodes = applyNodeChanges(changes, nodes: nodes)
-                },
-                onEdgesChange: { _ in },
-                onConnect: { _ in },
-                nodesDraggable: false,
-                nodesConnectable: false,
-                elementsSelectable: true,
-                panOnDrag: true,
-                panOnScroll: true,
-                zoomOnScroll: false,
-                zoomOnPinch: true,
-                zoomOnDoubleClick: false,
-                fitView: true,
-                onViewportChange: { viewport in
-                    zoom = ChangeCanvasView.clampedZoom(viewport.zoom)
-                },
-                onNodeClick: { node in activate(node.data) },
-                swiftFlowInstance: flowInstance
-            ) { node in
-                nodeView(node.data)
-            } overlay: {
-                Background(variant: .dots)
-            }
-            .accessibilityIdentifier("change-canvas-pane")
-        }
+        canvasContent
         .onAppear { rebuildGraph() }
         .onChange(of: files) { _ in rebuildGraph(resetCollapse: true) }
         .onChange(of: collapsedFolderIDs) { _ in rebuildGraph() }
@@ -80,6 +56,54 @@ struct SwiftFlowCanvasSpikeView: View {
         .onReceive(NotificationCenter.default.publisher(for: .reviewCanvasExpandAllFoldersRequest)) { note in
             guard targetsThisStore(note) else { return }
             collapsedFolderIDs.removeAll()
+        }
+    }
+
+    @ViewBuilder
+    private var canvasContent: some View {
+        if files.isEmpty {
+            EmptyStateView(
+                icon: "map",
+                title: "Nothing to map",
+                message: "This pull request has no changed files."
+            )
+        } else {
+            VStack(spacing: 0) {
+                toolbar
+                Divider()
+                flowCanvas
+                    .accessibilityIdentifier("change-canvas-pane")
+            }
+        }
+    }
+
+    private var flowCanvas: some View {
+        SwiftFlow(
+            nodes: nodes,
+            edges: edges,
+            onNodesChange: { changes in
+                nodes = applyNodeChanges(changes, nodes: nodes)
+            },
+            onEdgesChange: { _ in },
+            onConnect: { _ in },
+            nodesDraggable: false,
+            nodesConnectable: false,
+            elementsSelectable: true,
+            panOnDrag: true,
+            panOnScroll: true,
+            zoomOnScroll: false,
+            zoomOnPinch: true,
+            zoomOnDoubleClick: false,
+            fitView: true,
+            onViewportChange: { viewport in
+                zoom = ChangeCanvasView.clampedZoom(viewport.zoom)
+            },
+            onNodeClick: { node in activate(node.data) },
+            swiftFlowInstance: flowInstance
+        ) { node in
+            nodeView(node.data)
+        } overlay: {
+            Background(variant: .dots)
         }
     }
 
@@ -246,7 +270,7 @@ struct SwiftFlowCanvasSpikeView: View {
 
         nodes = visibleTree.nodes.enumerated().map { index, node in
             let frame = plan.frames[index]
-            return SwiftFlow.Node(
+            return Node(
                 id: node.id,
                 position: XYPosition(x: frame.minX, y: frame.minY),
                 data: NodeData(

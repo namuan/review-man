@@ -1602,7 +1602,7 @@ struct TreePlan {
     }
 }
 
-private enum TreeMetrics {
+enum TreeMetrics {
     static let folderMinimumWidth: CGFloat = 190
     static let folderHeight: CGFloat = 54
     static let fileMinimumWidth: CGFloat = 250

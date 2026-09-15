@@ -11,7 +11,7 @@ let package = Package(
         .executable(name: "PRReviewApp", targets: ["PRReviewApp"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/aaurelions/SwiftFlow.git", from: "0.1.1"),
+        .package(url: "https://github.com/aaurelions/SwiftFlow.git", exact: "0.1.1"),
     ],
     targets: [
         .target(
