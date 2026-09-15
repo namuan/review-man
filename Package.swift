@@ -1,4 +1,4 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.1
 import PackageDescription
 
 let package = Package(
@@ -9,6 +9,9 @@ let package = Package(
         .library(name: "PRReviewDesktop", targets: ["PRReviewDesktop"]),
         .executable(name: "pr-review", targets: ["pr-review"]),
         .executable(name: "PRReviewApp", targets: ["PRReviewApp"]),
+    ],
+    dependencies: [
+        .package(url: "https://github.com/aaurelions/SwiftFlow.git", exact: "0.1.1"),
     ],
     targets: [
         .target(
@@ -34,7 +37,10 @@ let package = Package(
         ),
         .target(
             name: "PRReviewDesktop",
-            dependencies: ["PRReviewKit"],
+            dependencies: [
+                "PRReviewKit",
+                .product(name: "SwiftFlow", package: "SwiftFlow"),
+            ],
             path: "Sources/PRReviewDesktop"
         ),
         .executableTarget(
@@ -57,5 +63,6 @@ let package = Package(
             dependencies: ["PRReviewKit", "PRReviewDesktop"],
             path: "Tests/PRReviewDesktopTests"
         ),
-    ]
+    ],
+    swiftLanguageModes: [.v5]
 )

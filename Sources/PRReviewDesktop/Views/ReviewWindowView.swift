@@ -355,16 +355,29 @@ public struct ReviewWindowView: View {
                     // Its internal expansion, keyboard-focus, and scroll
                     // state then survive switching between the two modes.
                     ZStack {
-                        ChangeCanvasView(
-                            store: store,
-                            files: review.files,
-                            showCanvas: $showCanvas,
-                            zoom: $canvasZoom
-                        )
-                        .opacity(showCanvas ? 1 : 0)
-                        .allowsHitTesting(showCanvas)
-                        .disabled(!showCanvas)
-                        .accessibilityHidden(!showCanvas)
+                        if SwiftFlowCanvasSpike.isEnabled {
+                            SwiftFlowCanvasSpikeView(
+                                store: store,
+                                files: review.files,
+                                showCanvas: $showCanvas,
+                                zoom: $canvasZoom
+                            )
+                            .opacity(showCanvas ? 1 : 0)
+                            .allowsHitTesting(showCanvas)
+                            .disabled(!showCanvas)
+                            .accessibilityHidden(!showCanvas)
+                        } else {
+                            ChangeCanvasView(
+                                store: store,
+                                files: review.files,
+                                showCanvas: $showCanvas,
+                                zoom: $canvasZoom
+                            )
+                            .opacity(showCanvas ? 1 : 0)
+                            .allowsHitTesting(showCanvas)
+                            .disabled(!showCanvas)
+                            .accessibilityHidden(!showCanvas)
+                        }
 
                         if !showCanvas, let file = store.selectedFile {
                             DiffView(store: store, file: file, presentation: $diffPresentation)
