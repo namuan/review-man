@@ -44,6 +44,8 @@ separate windows and no duplicates for the same repository + PR.
   Press Cmd-F to focus the filter, Cmd-Option-Left to collapse folders, or
   Cmd-Option-Right to expand them. Shift-click or Cmd-click files to select
   several: Toggle Viewed and the row menu then act on the whole selection.
+  The eye button next to the filter hides viewed files, so the sidebar lists
+  only what is left to review.
 - **`gh` onboarding**: the app discovers `gh` from your PATH, Apple Silicon
   Homebrew, or MacPorts (or a user-selected executable) and shows actionable
   status for missing, unauthenticated, expired, or under-scoped
