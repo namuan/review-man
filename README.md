@@ -46,6 +46,10 @@ separate windows and no duplicates for the same repository + PR.
   several: Toggle Viewed and the row menu then act on the whole selection.
   The eye button next to the filter hides viewed files, so the sidebar lists
   only what is left to review.
+  The magnifying glass switches the filter to a regular expression on paths
+  or on the lines files add and remove; "Mark Files Matching Filter Viewed"
+  then marks what it found. A file's menu also marks every file with the
+  same change, or a similar one (most changed lines in common), viewed.
 - **`gh` onboarding**: the app discovers `gh` from your PATH, Apple Silicon
   Homebrew, or MacPorts (or a user-selected executable) and shows actionable
   status for missing, unauthenticated, expired, or under-scoped
