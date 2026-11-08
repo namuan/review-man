@@ -129,6 +129,120 @@ final class ReviewCommandTests: XCTestCase {
         }
     }
 
+    // MARK: - Stacked list
+
+    @MainActor
+    func testListCollapsesViewedFilesByDefaultAndHonorsToggles() {
+        let store = makeLoadedStore(diff: threeFileDiff)
+        let files = store.review?.files ?? []
+        store.toggleViewed(filePath: files[1].path)
+
+        XCTAssertFalse(store.isCollapsedInList(files[0]))
+        XCTAssertTrue(store.isCollapsedInList(files[1]), "viewed files start collapsed, like GitHub")
+
+        store.toggleCollapsedInList(files[0])
+        store.toggleCollapsedInList(files[1])
+
+        XCTAssertTrue(store.isCollapsedInList(files[0]))
+        XCTAssertFalse(store.isCollapsedInList(files[1]))
+    }
+
+    @MainActor
+    func testListCollapsesFilesTooLargeToRenderEagerly() {
+        var big = DiffFile()
+        big.newPath = "Big.swift"
+        big.hunks = [DiffHunk(
+            oldStart: 1, oldCount: 0, newStart: 1, newCount: 500, context: "",
+            lines: (1...500).map { DiffLine(kind: .added, content: "x", oldLine: nil, newLine: $0) }
+        )]
+        var binary = DiffFile()
+        binary.newPath = "image.png"
+        binary.isBinary = true
+
+        XCTAssertTrue(StackedDiffsLayout.isCollapsedByDefault(big, isViewed: false))
+        XCTAssertTrue(StackedDiffsLayout.isCollapsedByDefault(binary, isViewed: false))
+    }
+
+    @MainActor
+    func testClickingALineInAnotherFileSelectsThatFile() {
+        let store = makeLoadedStore(diff: threeFileDiff)
+        let files = store.review?.files ?? []
+        store.select(filePath: files[0].path)
+
+        DiffLineSelection.handleTap(store: store, file: files[2], hunkIndex: 0, lineIndex: 1)
+
+        XCTAssertEqual(store.selection.filePath, files[2].path)
+        guard case .line(let path, _, _, _, _)? = store.selection.rowID else {
+            return XCTFail("expected a line selection, got \(String(describing: store.selection.rowID))")
+        }
+        XCTAssertEqual(path, files[2].path)
+    }
+
+    // MARK: - Find
+
+    /// The matched line's code and the matched range, for readable asserts.
+    @MainActor
+    private func found(_ store: ReviewSessionStore) -> String? {
+        guard let match = store.findMatch, let file = store.selectedFile,
+              let row = store.review?.diffRows(for: file).first(where: { $0.id == match.rowID }),
+              case .line(let hunk, let index) = row.row, let line = file.line(at: hunk, index) else { return nil }
+        return "\(line.content)@\(match.range.lowerBound)..<\(match.range.upperBound)"
+    }
+
+    @MainActor
+    func testFindSelectsMatchesInTheOpenFileAndWraps() {
+        let store = makeLoadedStore()
+        store.beginFind()
+
+        store.setFindQuery("NEW")
+        XCTAssertEqual(found(store), "new2@0..<3")
+        XCTAssertEqual(store.findMatchPosition?.index, 1)
+        XCTAssertEqual(store.findMatchPosition?.count, 2)
+        XCTAssertEqual(store.selection.rowID, store.findMatch?.rowID, "the match's line is selected, so it scrolls into view")
+
+        store.findNext()
+        XCTAssertEqual(found(store), "new3@0..<3")
+        store.findNext()
+        XCTAssertEqual(found(store), "new2@0..<3")
+        store.findPrevious()
+        XCTAssertEqual(found(store), "new3@0..<3")
+    }
+
+    @MainActor
+    func testFindReportsNoMatchAndClearsOnEnd() {
+        let store = makeLoadedStore()
+        store.beginFind()
+
+        store.setFindQuery("ee")
+        XCTAssertEqual(found(store), "keep1@1..<3")
+
+        store.setFindQuery("zzz")
+        XCTAssertNil(store.findMatch)
+        XCTAssertEqual(store.findMatchPosition?.count, 0)
+
+        store.endFind()
+        XCTAssertFalse(store.isFinding)
+        XCTAssertNil(store.findMatch)
+    }
+
+    private var threeFileDiff: String {
+        sampleDiff + """
+
+        diff --git a/README.md b/README.md
+        --- a/README.md
+        +++ b/README.md
+        @@ -1,1 +1,2 @@
+         # Title
+        +New line
+        diff --git a/NOTES.md b/NOTES.md
+        --- a/NOTES.md
+        +++ b/NOTES.md
+        @@ -1,1 +1,2 @@
+         # Notes
+        +Another line
+        """
+    }
+
     // MARK: - Escape precedence
 
     @MainActor

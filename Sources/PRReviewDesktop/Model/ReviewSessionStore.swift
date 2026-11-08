@@ -50,6 +50,10 @@ public final class ReviewSessionStore: ObservableObject {
     @Published public var submitEvent: ReviewEvent = .comment
     @Published public var submitBody = ""
     @Published public var submitValidationMessage: String?
+    // Find in the open file.
+    @Published public var isFinding = false
+    @Published public internal(set) var findQuery = ""
+    @Published public internal(set) var findMatch: DiffFindMatch?
 
     /// The single hovered diff row, observed ONLY by diff-row views. Keeping
     /// hover outside the store's own @Published surface stops constant mouse
@@ -88,6 +92,11 @@ public final class ReviewSessionStore: ObservableObject {
     /// of holding a key on very large files.
     var commentableCache: [String: [DiffRowID]] = [:]
     var hunkIDsCache: [String: [DiffRowID]] = [:]
+    /// Head-file lines fetched for context expansion, keyed `sha:path`.
+    var fileLinesCache: [String: [String]] = [:]
+    /// Files the reviewer opened or closed in the stacked list, overriding
+    /// `StackedDiffsLayout.isCollapsedByDefault`; cleared per pull request.
+    @Published var listCollapseOverrides: [String: Bool] = [:]
     var linePositionCache: [String: [DiffRowID: (hunk: Int, lineIndex: Int)]] = [:]
     /// Debounced persistence tasks (see `ReviewSessionStoreWorkflows`): rapid
     /// mutations cancel the pending write and schedule a fresh one, so only
@@ -153,6 +162,7 @@ public final class ReviewSessionStore: ObservableObject {
         let generation = loadGeneration
         loadTask?.cancel()
 
+        listCollapseOverrides = [:]
         // A new review invalidates everything derived from the previous one:
         // rendered lines, navigation indexes, and per-file lookups. The old
         // cache contents would only pin memory for lines that can never be
@@ -247,7 +257,7 @@ public final class ReviewSessionStore: ObservableObject {
     }
 
     /// Resets per-review derived caches (rendered lines + navigation indexes).
-    private func resetDerivedCaches() {
+    func resetDerivedCaches() {
         diffLineCache.removeAll()
         commentableCache.removeAll()
         hunkIDsCache.removeAll()

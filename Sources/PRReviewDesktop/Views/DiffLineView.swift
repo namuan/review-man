@@ -41,7 +41,8 @@ public struct DiffLineView: View {
         // `digits * 2 + 3` value was treated as points while the string is
         // that many *characters*, so the monospace gutter wrapped vertically
         // and inflated every row to ~45px.
-        let gutterWidth = CGFloat(gutter.count) * 7.2
+        let characterWidth = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular).maximumAdvancement.width
+        let gutterWidth = (CGFloat(gutter.count) * characterWidth).rounded(.up) + 2
 
         // Rendered line from the per-window cache: tokenization + attributed
         // string building happen once per line per theme, so switching files
@@ -145,6 +146,11 @@ public struct DiffLineView: View {
 enum DiffLineSelection {
     static func handleTap(store: ReviewSessionStore, file: DiffFile, hunkIndex: Int, lineIndex: Int) {
         guard let diffLine = file.line(at: hunkIndex, lineIndex) else { return }
+        // The stacked list shows every file, so a click can land outside the
+        // selected one; commands act on the selected file, so follow the click.
+        if store.selection.filePath != file.path {
+            store.select(filePath: file.path)
+        }
         let isShift = NSEvent.modifierFlags.contains(.shift)
         if isShift, let startRow = store.selection.rowID {
             let end = (file, hunkIndex, lineIndex)
@@ -179,20 +185,44 @@ enum DiffLineSelection {
 /// A unified hunk header row.
 public struct HunkHeaderView: View {
     public let hunk: DiffHunk
+    /// Unchanged lines hidden above this hunk.
+    public let hiddenAbove: Int
+    /// Reveals hidden lines: `false` for one step, `true` for all of them.
+    public let onExpand: ((Bool) -> Void)?
 
-    public init(hunk: DiffHunk) {
+    public init(hunk: DiffHunk, hiddenAbove: Int = 0, onExpand: ((Bool) -> Void)? = nil) {
         self.hunk = hunk
+        self.hiddenAbove = hiddenAbove
+        self.onExpand = onExpand
     }
 
     public var body: some View {
-        Text(hunk.header)
-            .font(.system(size: 12, weight: .medium, design: .monospaced))
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            .background(SwiftUI.Color.gray.opacity(0.08))
-            .accessibilityIdentifier("hunk-header")
+        // The expand buttons lead, so they stay on screen in a side-by-side
+        // pane whose rows are wider than the visible column.
+        HStack(spacing: 10) {
+            if hiddenAbove > 0, let onExpand {
+                let step = min(ReviewSessionStore.contextExpansionStep, hiddenAbove)
+                Button("Show \(step) more" as String) { onExpand(false) }
+                    .help(Text(verbatim: "Reveal \(step) hidden lines above this change"))
+                    .accessibilityIdentifier("hunk-expand-step")
+                if hiddenAbove > step {
+                    Button("Show all \(hiddenAbove)" as String) { onExpand(true) }
+                        .accessibilityIdentifier("hunk-expand-all")
+                }
+            }
+            Text(hunk.header)
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Spacer(minLength: 8)
+        }
+        .buttonStyle(.link)
+        .font(.caption)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(SwiftUI.Color.gray.opacity(0.08))
+        .accessibilityIdentifier("hunk-header")
     }
 }
 

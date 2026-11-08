@@ -19,6 +19,8 @@ separate windows and no duplicates for the same repository + PR.
 
 - **Read the diff** with SF Mono, fixed line-number gutters, horizontal
   scrolling, syntax coloring, and word-level change highlighting.
+- **List overview**: next to the canvas, the toolbar's List shows every file's diff stacked in one scroll, like GitHub's "Files changed": each file has a pinned header with its Viewed checkbox and folds away (viewed, binary and very long files start folded). Comments, threads and hidden-line expansion work there too.
+- **Expand hidden lines**: each hunk header shows how many unchanged lines sit above it; click it to reveal 20 more (Option-click, or "Show all", for the whole gap). Lines come from the file at the PR's head commit, fetched once per file.
 - **Change canvas**: see every changed file as a spatial card with a complete,
   readable patch, status, change density, comment counts, and viewed marks;
   click a card to open the focused diff for line-level comments. Pinch on a
@@ -27,10 +29,8 @@ separate windows and no duplicates for the same repository + PR.
   Small PRs render complete patch cards; once the diff grows past a render
   budget (~2,000 patch rows, 60 files, or ~12k diff lines), cards collapse to
   file-name-only. Demo tiers: `small` stays full; `medium`, `large`, and
-  `xlarge` degrade to file-name cards (`xlarge` to summaries). In the
-  condensed tier, Option-click a file name to expand one patch inline;
-  Option-click it again to collapse. The focused diff always remains the
-  full, commentable view.
+  `xlarge` degrade to file-name cards (`xlarge` to summaries). Click a card to
+  open its focused diff, which is always the full, commentable view.
 - **Comment inline**: click a line and add a draft (deleted lines become
   LEFT-side comments), or Shift-click for a multi-line range comment. Drafts
   are edited and deleted in place, with Undo/Redo, and persist automatically.
@@ -39,9 +39,12 @@ separate windows and no duplicates for the same repository + PR.
 - **Review**: comment, approve, or request changes with a summary; orphaned
   drafts (whose anchor left the diff) are excluded from submission and
   reattach automatically when their line returns.
+- **Find in file**: Cmd-F searches the open diff's code; Return or Cmd-G
+  moves to the next match, Shift-Return or Shift-Cmd-G to the previous, and
+  the match is selected, so Cmd-C copies it. Drag across code to select it.
 - **File sidebar** with an inline filter, expandable folder tree, status
   letters, ± counts, comment badges, and locally-persisted viewed marks.
-  Press Cmd-F to focus the filter, Cmd-Option-Left to collapse folders, or
+  Press Cmd-Option-F to focus the filter, Cmd-Option-Left to collapse folders, or
   Cmd-Option-Right to expand them.
 - **`gh` onboarding**: the app discovers `gh` from your PATH, Apple Silicon
   Homebrew, or MacPorts (or a user-selected executable) and shows actionable
@@ -175,6 +178,7 @@ open "build/PR Review.app" --args --demo --demo-files 500 --demo-lines 60000
 - **Replies are sent immediately** (GitHub's reply API has no pending-review
   batching). Only top-level comments are submitted as one review.
 - **Viewed marks are local only** (per head SHA); they are not pushed to GitHub.
+- **What a pull request opens into** is set in Settings > General: the pane (last used overview, canvas, list or first file), the diff layout, and whether the sidebar opens on the files. On very big pull requests the list or a file opens faster: the canvas is only built once it shows.
 - **LEFT-side comments** use old-file line numbers; **RIGHT-side** use new-file
   line numbers, exactly as the GitHub API requires.
 - **Orphaned drafts**: when a head changes and a draft's line disappears, the
