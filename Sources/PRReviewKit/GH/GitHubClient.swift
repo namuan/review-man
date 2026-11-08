@@ -167,15 +167,12 @@ public final class GitHubClient: GitHubServing {
         AppLog.info("github", "Resolving pull request reference \(arg)")
         var trimmed = arg.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.hasSuffix("/") { trimmed.removeLast() }
-        if trimmed.hasPrefix("https://github.com/") || trimmed.hasPrefix("http://github.com/") {
-            let path = trimmed.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
-            // ["https:", "github.com", owner, repo, "pull", N]
-            if path.count >= 5, path[path.count - 2] == "pull", let n = Int(path[path.count - 1]) {
-                let endpoint = PREndpoint(owner: path[path.count - 4], repo: path[path.count - 3], number: n)
-                AppLog.info("github", "Resolved URL to \(endpoint)")
-                return endpoint
+        if trimmed.lowercased().hasPrefix("https://") || trimmed.lowercased().hasPrefix("http://") {
+            guard let endpoint = URL(string: trimmed).flatMap(PREndpoint.init(gitHubURL:)) else {
+                throw GitHubError.parse("Not a GitHub PR URL: \(arg)")
             }
-            throw GitHubError.parse("Not a GitHub PR URL: \(arg)")
+            AppLog.info("github", "Resolved URL to \(endpoint)")
+            return endpoint
         }
         // owner/repo#number
         if trimmed.contains("#") {
@@ -183,11 +180,12 @@ public final class GitHubClient: GitHubServing {
             guard parts.count == 2, let n = Int(parts[1]) else {
                 throw GitHubError.parse("Expected owner/repo#number: \(arg)")
             }
-            let repoParts = parts[0].split(separator: "/")
-            guard repoParts.count == 2 else {
+            let repoParts = parts[0].split(separator: "/", omittingEmptySubsequences: false)
+            guard repoParts.count == 2,
+                  let endpoint = PREndpoint(validatingOwner: String(repoParts[0]), repo: String(repoParts[1]), number: n)
+            else {
                 throw GitHubError.parse("Expected owner/repo#number: \(arg)")
             }
-            let endpoint = PREndpoint(owner: String(repoParts[0]), repo: String(repoParts[1]), number: n)
             AppLog.info("github", "Resolved shorthand to \(endpoint)")
             return endpoint
         }
@@ -199,11 +197,12 @@ public final class GitHubClient: GitHubServing {
             )
             let name = String(data: out.data, encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let parts = name.split(separator: "/")
-            guard parts.count == 2 else {
+            let parts = name.split(separator: "/", omittingEmptySubsequences: false)
+            guard parts.count == 2,
+                  let endpoint = PREndpoint(validatingOwner: String(parts[0]), repo: String(parts[1]), number: n)
+            else {
                 throw GitHubError.parse("Could not determine the current repository; use owner/repo#number or a full URL.")
             }
-            let endpoint = PREndpoint(owner: String(parts[0]), repo: String(parts[1]), number: n)
             AppLog.info("github", "Resolved current-repository reference to \(endpoint)")
             return endpoint
         }
@@ -364,6 +363,10 @@ public final class GitHubClient: GitHubServing {
     }
     """
 
+    /// Upper bound on concurrent per-thread comment fetches, each one a `gh`
+    /// process; a page holds up to 100 threads.
+    static let maxConcurrentThreadCommentFetches = 4
+
     public func fetchThreads(_ ep: PREndpoint) async throws -> [PRThread] {
         AppLog.info("github", "Fetching review threads for \(ep)")
         var threads: [PRThread] = []
@@ -380,13 +383,15 @@ public final class GitHubClient: GitHubServing {
                 variables: variables
             )
             let conn = data.repository.pullRequest.reviewThreads
-            // Fetch each thread's (possibly multi-page) comments concurrently;
-            // the task group keeps concurrency bounded by the executor and
-            // preserves thread order by collecting into index slots.
+            // Fetch each thread's (possibly multi-page) comments concurrently,
+            // at most `maxConcurrentThreadCommentFetches` `gh` processes at a
+            // time, preserving thread order by collecting into index slots.
             let pageNodes = conn.nodes
             var ordered: [PRThread?] = Array(repeating: nil, count: pageNodes.count)
             try await withThrowingTaskGroup(of: (Int, PRThread).self) { group in
-                for (i, node) in pageNodes.enumerated() {
+                var pending = pageNodes.enumerated().makeIterator()
+                func startNext() {
+                    guard let (i, node) = pending.next() else { return }
                     group.addTask {
                         let comments = try await self.fetchThreadComments(threadID: node.id, initial: node.comments)
                         let thread = PRThread(
@@ -404,8 +409,10 @@ public final class GitHubClient: GitHubServing {
                         return (i, thread)
                     }
                 }
+                for _ in 0..<Self.maxConcurrentThreadCommentFetches { startNext() }
                 for try await (i, thread) in group {
                     ordered[i] = thread
+                    startNext()
                 }
             }
             threads.append(contentsOf: ordered.compactMap { $0 })

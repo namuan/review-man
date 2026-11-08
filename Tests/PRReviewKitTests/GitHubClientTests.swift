@@ -20,6 +20,34 @@ private final class ScriptedCommandRunner: CommandRunning {
     }
 }
 
+/// Answers the thread page once, then each per-thread comment page after a
+/// short delay, recording how many comment fetches were in flight at once.
+private final class ConcurrencyTrackingRunner: CommandRunning, @unchecked Sendable {
+    let threadsPage: Data
+    let commentsPage: Data
+    private let lock = NSLock()
+    private var inFlight = 0
+    private(set) var maxInFlight = 0
+
+    init(threadsPage: Data, commentsPage: Data) {
+        self.threadsPage = threadsPage
+        self.commentsPage = commentsPage
+    }
+
+    func run(_ args: [String], timeout: TimeInterval) async throws -> GH.Result {
+        guard args.contains(where: { $0.hasPrefix("threadID=") }) else {
+            return GH.Result(data: threadsPage, stderr: "")
+        }
+        lock.withLock {
+            inFlight += 1
+            maxInFlight = max(maxInFlight, inFlight)
+        }
+        try await Task.sleep(nanoseconds: 20_000_000)
+        lock.withLock { inFlight -= 1 }
+        return GH.Result(data: commentsPage, stderr: "")
+    }
+}
+
 final class GitHubClientTests: XCTestCase {
 
     private let ep = PREndpoint(owner: "o", repo: "r", number: 3)
@@ -109,7 +137,8 @@ final class GitHubClientTests: XCTestCase {
     private func threadsPage(
         hasNext: Bool,
         endCursor: String?,
-        node: [String: Any]? = nil
+        node: [String: Any]? = nil,
+        nodes: [[String: Any]] = []
     ) -> [String: Any] {
         [
             "data": [
@@ -120,7 +149,7 @@ final class GitHubClientTests: XCTestCase {
                                 "hasNextPage": hasNext,
                                 "endCursor": endCursor as Any,
                             ],
-                            "nodes": node.map { [$0] } ?? [],
+                            "nodes": node.map { [$0] } ?? nodes,
                         ],
                     ],
                 ],
@@ -245,6 +274,25 @@ final class GitHubClientTests: XCTestCase {
         XCTAssertFalse(runner.calls[1].first(where: { $0.hasPrefix("query=") })?.contains("cursor-A") ?? false)
     }
 
+    /// A page of long threads used to spawn one `gh` per thread at once.
+    func testThreadCommentFetchesAreBoundedAndKeepOrder() async throws {
+        let ids = (1...12).map { "t\($0)" }
+        let runner = ConcurrencyTrackingRunner(
+            threadsPage: graphQLData(threadsPage(
+                hasNext: false,
+                endCursor: nil,
+                nodes: ids.map { threadNode(id: $0, commentsHasNext: true, commentsCursor: "c-\($0)") }
+            )),
+            commentsPage: graphQLData(commentsPage(nodes: [], hasNext: false, endCursor: nil))
+        )
+
+        let threads = try await GitHubClient(commandRunner: runner).fetchThreads(ep)
+
+        XCTAssertEqual(threads.map(\.id), ids)
+        XCTAssertLessThanOrEqual(runner.maxInFlight, GitHubClient.maxConcurrentThreadCommentFetches)
+        XCTAssertGreaterThan(runner.maxInFlight, 1)
+    }
+
     /// A failed submit must still remove its private payload file.
     func testSubmitReviewRemovesPayloadFileOnCommandFailure() async throws {
         let dir = FileManager.default.temporaryDirectory
@@ -317,6 +365,50 @@ final class GitHubClientTests: XCTestCase {
             XCTFail("expected CancellationError")
         } catch is CancellationError {
             // expected
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+    }
+
+    func testResolveEndpointAcceptsURLsAndShorthand() async throws {
+        let client = GitHubClient(commandRunner: ScriptedCommandRunner())
+        let expected = PREndpoint(owner: "o", repo: "r", number: 7)
+
+        for arg in ["https://github.com/o/r/pull/7", "https://www.github.com/o/r/pull/7/files", "o/r#7", " o/r#7 "] {
+            let resolved = try await client.resolveEndpoint(from: arg)
+            XCTAssertEqual(resolved, expected, arg)
+        }
+    }
+
+    /// Owner and repo reach `gh` as `-F owner=...` and REST path segments, so
+    /// an `@file` or `..` must be refused before any command runs.
+    func testResolveEndpointRejectsNamesGhWouldInterpret() async {
+        let runner = ScriptedCommandRunner()
+        let client = GitHubClient(commandRunner: runner)
+
+        for arg in ["@etc/r#1", "o/..#1", "https://github.com/%40o/r/pull/1", "https://github.com/o/r"] {
+            do {
+                _ = try await client.resolveEndpoint(from: arg)
+                XCTFail("expected parse error for \(arg)")
+            } catch let error as GitHubError {
+                guard case .parse = error else { return XCTFail("expected parse, got \(error)") }
+            } catch {
+                XCTFail("unexpected error: \(error)")
+            }
+        }
+        XCTAssertTrue(runner.calls.isEmpty)
+    }
+
+    func testResolveEndpointRejectsInvalidCurrentRepositoryName() async {
+        let runner = ScriptedCommandRunner()
+        runner.results = [GH.Result(data: Data("@etc/r\n".utf8), stderr: "")]
+        let client = GitHubClient(commandRunner: runner)
+
+        do {
+            _ = try await client.resolveEndpoint(from: "5")
+            XCTFail("expected parse error")
+        } catch let error as GitHubError {
+            guard case .parse = error else { return XCTFail("expected parse, got \(error)") }
         } catch {
             XCTFail("unexpected error: \(error)")
         }
