@@ -55,14 +55,16 @@ public struct ReviewWindowView: View {
         .modifier(CommandRoutingModifier(
             store: store,
             showOpenSheet: $showOpenSheet,
-            sidebarVisible: $sidebarVisible,
-            canvasZoom: $canvasZoom
+            sidebarVisible: $sidebarVisible
         ))
         .modifier(DiffPresentationCommandRouting(
             store: store,
             showCanvas: $showCanvas,
             diffPresentation: $diffPresentation
         ))
+        .modifier(ViewedNavigationCommandRouting(store: store))
+        .modifier(ZoomCommandRouting(store: store, showCanvas: $showCanvas, canvasZoom: $canvasZoom))
+        .modifier(NavigationHistoryRouting(store: store, showCanvas: $showCanvas))
         .toolbar { toolbarContent }
         .onChange(of: store.requestFocus) { _ in
             if store.requestFocus == .sidebarSearch {
@@ -70,6 +72,10 @@ public struct ReviewWindowView: View {
                 focusSidebarSearch = true
             }
             if store.requestFocus != .none { store.requestFocus = .none }
+        }
+        .onChange(of: store.state) { state in
+            // The sheet would otherwise cover the loading screen and its progress.
+            if case .loading = state { showOpenSheet = false }
         }
         .onChange(of: showCanvas) { showingCanvas in
             guard !showingCanvas, let file = store.selectedFile else { return }
@@ -83,7 +89,7 @@ public struct ReviewWindowView: View {
                 Text("Open Pull Request")
                     .font(.headline)
                     .accessibilityAddTraits(.isHeader)
-                OpenPullRequestForm(store: store, reference: $sheetReference)
+                OpenPullRequestForm(store: store, reference: $sheetReference) { showOpenSheet = false }
                     .frame(maxWidth: 420)
                 Button("Close") { showOpenSheet = false }
                     .keyboardShortcut(.cancelAction)
@@ -262,11 +268,39 @@ public struct ReviewWindowView: View {
     }
 
     private func loadingView(reference: String) -> some View {
-        VStack(spacing: 16) {
-            ProgressView()
-                .controlSize(.large)
-            Text("Opening \(reference)…")
-                .foregroundStyle(.secondary)
+        let progress = store.loadProgress
+        return VStack(spacing: 12) {
+            if let fraction = progress.fractionCompleted {
+                ProgressView(value: fraction)
+                    .frame(width: 280)
+            } else {
+                ProgressView()
+                    .controlSize(.large)
+            }
+            Text("Opening \(reference)")
+                .font(.headline)
+            Text(progress.headline)
+                .monospacedDigit()
+                .accessibilityIdentifier("loading-stage")
+            if let size = progress.sizeSummary {
+                Text(size)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            if let note = progress.note {
+                Text(note)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 320)
+            }
+            TimelineView(.periodic(from: progress.startedAt, by: 1)) { context in
+                Text("\(Int(context.date.timeIntervalSince(progress.startedAt)))s")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .monospacedDigit()
+            }
             Button("Cancel") { store.cancelLoad() }
         }
         .padding(40)
@@ -380,7 +414,11 @@ public struct ReviewWindowView: View {
                         }
 
                         if !showCanvas, let file = store.selectedFile {
-                            DiffView(store: store, file: file, presentation: $diffPresentation)
+                            VStack(spacing: 0) {
+                                FocusedFileBar(store: store, file: file)
+                                Divider()
+                                DiffView(store: store, file: file, presentation: $diffPresentation)
+                            }
                         } else if !showCanvas {
                             EmptyStateView(
                                 icon: "sidebar.left",
@@ -448,7 +486,6 @@ private struct CommandRoutingModifier: ViewModifier {
     @ObservedObject var store: ReviewSessionStore
     @Binding var showOpenSheet: Bool
     @Binding var sidebarVisible: Bool
-    @Binding var canvasZoom: CGFloat
 
     func body(content: Content) -> some View {
         content
@@ -504,18 +541,6 @@ private struct CommandRoutingModifier: ViewModifier {
                 guard matches(note) else { return }
                 sidebarVisible.toggle()
             }
-            .onReceive(NotificationCenter.default.publisher(for: .reviewCanvasZoomInRequest)) { note in
-                guard matches(note) else { return }
-                canvasZoom = ChangeCanvasView.clampedZoom(canvasZoom + ChangeCanvasView.zoomStep)
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .reviewCanvasZoomOutRequest)) { note in
-                guard matches(note) else { return }
-                canvasZoom = ChangeCanvasView.clampedZoom(canvasZoom - ChangeCanvasView.zoomStep)
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .reviewCanvasResetZoomRequest)) { note in
-                guard matches(note) else { return }
-                canvasZoom = ChangeCanvasView.defaultZoom
-            }
             .onReceive(NotificationCenter.default.publisher(for: .reviewPreviousFileRequest)) { note in
                 guard matches(note) else { return }
                 store.selectPreviousFile()
@@ -557,6 +582,121 @@ private struct DiffPresentationCommandRouting: ViewModifier {
                 diffPresentation = diffPresentation == .unified ? .sideBySide : .unified
             }
             showCanvas = false
+        }
+    }
+
+    private func matches(_ note: Notification) -> Bool {
+        guard let object = note.object as? ReviewSessionStore else { return true }
+        return object === store
+    }
+}
+
+/// Viewed-aware file navigation, kept out of `CommandRoutingModifier` for the
+/// same type-checker reason as `DiffPresentationCommandRouting`.
+private struct ViewedNavigationCommandRouting: ViewModifier {
+    @ObservedObject var store: ReviewSessionStore
+
+    func body(content: Content) -> some View {
+        content
+            .onReceive(NotificationCenter.default.publisher(for: .reviewPreviousUnviewedFileRequest)) { note in
+                guard matches(note) else { return }
+                store.selectPreviousUnviewedFile()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .reviewNextUnviewedFileRequest)) { note in
+                guard matches(note) else { return }
+                store.selectNextUnviewedFile()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .reviewMarkViewedAndNextRequest)) { note in
+                guard matches(note) else { return }
+                store.markViewedAndAdvance()
+            }
+    }
+
+    private func matches(_ note: Notification) -> Bool {
+        guard let object = note.object as? ReviewSessionStore else { return true }
+        return object === store
+    }
+}
+
+/// Records where the window looks (canvas or a file) and serves Back/Forward.
+/// History starts over whenever a different pull request loads.
+private struct NavigationHistoryRouting: ViewModifier {
+    @ObservedObject var store: ReviewSessionStore
+    @Binding var showCanvas: Bool
+    @State private var history = NavigationHistory<ReviewLocation>()
+
+    private var location: ReviewLocation {
+        if showCanvas { return .canvas }
+        return store.selection.filePath.map(ReviewLocation.file) ?? .canvas
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear { history.visit(location) }
+            .onChange(of: location) { history.visit($0) }
+            .onChange(of: store.review?.pr?.url) { _ in
+                history.reset()
+                history.visit(location)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .reviewNavigateBackRequest)) { note in
+                guard matches(note) else { return }
+                history.back().map(go)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .reviewNavigateForwardRequest)) { note in
+                guard matches(note) else { return }
+                history.forward().map(go)
+            }
+    }
+
+    private func go(_ target: ReviewLocation) {
+        switch target {
+        case .canvas:
+            showCanvas = true
+        case .file(let path):
+            store.select(filePath: path)
+            showCanvas = false
+        }
+    }
+
+    private func matches(_ note: Notification) -> Bool {
+        guard let object = note.object as? ReviewSessionStore else { return true }
+        return object === store
+    }
+}
+
+/// Cmd-+ / Cmd-- / Cmd-0 zoom the canvas while it shows, and size the diff
+/// text while a file is open.
+private struct ZoomCommandRouting: ViewModifier {
+    @ObservedObject var store: ReviewSessionStore
+    @Binding var showCanvas: Bool
+    @Binding var canvasZoom: CGFloat
+    @AppStorage(DiffTextSize.key) private var diffFontSize = Double(DiffTextSize.defaultSize)
+
+    func body(content: Content) -> some View {
+        content
+            .onReceive(NotificationCenter.default.publisher(for: .reviewCanvasZoomInRequest)) { note in
+                guard matches(note) else { return }
+                zoom(by: 1)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .reviewCanvasZoomOutRequest)) { note in
+                guard matches(note) else { return }
+                zoom(by: -1)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .reviewCanvasResetZoomRequest)) { note in
+                guard matches(note) else { return }
+                if showCanvas {
+                    canvasZoom = ChangeCanvasView.defaultZoom
+                } else {
+                    diffFontSize = Double(DiffTextSize.defaultSize)
+                }
+            }
+    }
+
+    private func zoom(by direction: CGFloat) {
+        if showCanvas {
+            canvasZoom = ChangeCanvasView.clampedZoom(canvasZoom + direction * ChangeCanvasView.zoomStep)
+        } else {
+            diffFontSize = Double(DiffTextSize.stepped(CGFloat(diffFontSize), by: direction))
         }
     }
 

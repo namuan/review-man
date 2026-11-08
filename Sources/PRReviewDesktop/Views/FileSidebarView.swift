@@ -299,7 +299,7 @@ private struct SidebarFileItemRow: View {
                     .accessibilityLabel("viewed")
             }
             if let additions = item.additions, let deletions = item.deletions {
-                Text("+\(additions) −\(deletions)")
+                Text(verbatim: "+\(additions) −\(deletions)")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
@@ -351,6 +351,14 @@ struct FileSidebarTreeNode: Identifiable, Equatable {
 
     static func build(from items: [FileSidebarItem]) -> [FileSidebarTreeNode] {
         build(items, depth: 0, folderPath: "")
+    }
+
+    /// File paths in the order the tree lists them: folders first, by name.
+    static func orderedPaths(from items: [FileSidebarItem]) -> [String] {
+        func walk(_ nodes: [FileSidebarTreeNode]) -> [String] {
+            nodes.flatMap { $0.item.map { [$0.path] } ?? walk($0.children) }
+        }
+        return walk(build(from: items))
     }
 
     /// IDs for every folder in the complete (unfiltered) sidebar tree. The

@@ -14,7 +14,7 @@ public struct PullRequestHeaderView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 if let pr = review.pr {
-                    Text("#\(pr.number)")
+                    Text(verbatim: "#\(pr.number)")
                         .font(.headline)
                         .foregroundStyle(.secondary)
                     Text(pr.title)
@@ -32,12 +32,30 @@ public struct PullRequestHeaderView: View {
                         Text(decision)
                             .foregroundStyle(.orange)
                     }
+                    if let checks = pr.checks {
+                        checksLabel(checks)
+                    }
                     Spacer()
-                    Text("+\(pr.additions)  −\(pr.deletions)  · \(pr.changedFiles) files")
+                    viewedProgress
+                    Text(verbatim: "+\(pr.additions)  −\(pr.deletions)  · \(pr.changedFiles) files")
                         .foregroundStyle(.secondary)
                 }
             }
             .font(.caption)
+            if let body = review.pr?.body?.trimmingCharacters(in: .whitespacesAndNewlines), !body.isEmpty {
+                // Plain text on purpose: PR bodies are untrusted input, and
+                // nothing in the app renders markdown or loads remote images.
+                DisclosureGroup("Description") {
+                    ScrollView {
+                        Text(body)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 180)
+                }
+                .font(.caption)
+                .accessibilityIdentifier("pr-description")
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -59,6 +77,40 @@ public struct PullRequestHeaderView: View {
             .padding(.vertical, 2)
             .background(color.opacity(0.15), in: Capsule())
             .foregroundStyle(color)
+    }
+
+    private func checksLabel(_ checks: PRChecksSummary) -> some View {
+        let (icon, color): (String, SwiftUI.Color) = {
+            if checks.failed > 0 { return ("xmark.circle", .red) }
+            if checks.pending > 0 { return ("clock", .orange) }
+            return ("checkmark.circle", .green)
+        }()
+        let parts = [
+            checks.passed > 0 ? "\(checks.passed) passed" : nil,
+            checks.failed > 0 ? "\(checks.failed) failed" : nil,
+            checks.pending > 0 ? "\(checks.pending) pending" : nil,
+        ].compactMap { $0 }
+        return Label("checks: " + parts.joined(separator: ", "), systemImage: icon)
+            .foregroundStyle(color)
+            .accessibilityIdentifier("pr-checks")
+    }
+
+    /// GitHub's "X / Y files viewed": how far through the review you are.
+    @ViewBuilder
+    private var viewedProgress: some View {
+        let total = review.files.count
+        if total > 0 {
+            let viewed = review.viewedFileCount
+            HStack(spacing: 6) {
+                ProgressView(value: Double(viewed), total: Double(total))
+                    .progressViewStyle(.linear)
+                    .frame(width: 60)
+                Text(verbatim: "\(viewed) of \(total) viewed")
+                    .foregroundStyle(viewed == total ? .green : .secondary)
+            }
+            .help("Files you marked viewed in this pull request")
+            .accessibilityIdentifier("pr-viewed-progress")
+        }
     }
 
     private var reviewDecisionLabel: String? {
