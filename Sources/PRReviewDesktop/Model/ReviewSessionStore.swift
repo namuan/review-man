@@ -32,6 +32,15 @@ public final class ReviewSessionStore: ObservableObject {
     @Published public var review: ReviewPresentation?
     @Published public var selection = ReviewSelection()
     @Published public var sidebarSearch = ""
+    /// Leaves viewed files out of the sidebar, so it lists what is left to
+    /// review. Kept for the window's next pull request.
+    @Published public var hideViewedFiles = false
+    /// Statuses the sidebar shows; empty shows every file.
+    @Published public var statusFilter: Set<FileStatus> = []
+    @Published public var sidebarSearchMode = SidebarSearchMode.paths
+    /// Files picked together in the sidebar with Shift or Command. Empty
+    /// unless more than one is picked; any single selection clears it.
+    @Published public var selectedFilePaths: Set<String> = []
     @Published public var banner: SessionBanner?
     @Published public var isBusy = false
     @Published public var persistenceFailure: PersistenceFailure?
@@ -89,6 +98,15 @@ public final class ReviewSessionStore: ObservableObject {
     var commentableCache: [String: [DiffRowID]] = [:]
     var hunkIDsCache: [String: [DiffRowID]] = [:]
     var linePositionCache: [String: [DiffRowID: (hunk: Int, lineIndex: Int)]] = [:]
+    /// Every comparable file's change signature, in file order, built on the
+    /// first similarity question about the loaded review.
+    var changeSignatureCache: [(path: String, signature: Set<String>)]?
+    /// For each comparable path, the paths with the identical change, itself
+    /// included; built with the cache above.
+    var sameChangePaths: [String: [String]] = [:]
+    /// The last regex filter's matches (nil paths: the pattern does not
+    /// compile), so redraws do not rerun it over every changed line.
+    var regexFilterCache: (pattern: String, mode: SidebarSearchMode, paths: Set<String>?)?
     /// Debounced persistence tasks (see `ReviewSessionStoreWorkflows`): rapid
     /// mutations cancel the pending write and schedule a fresh one, so only
     /// the final snapshot reaches disk.
@@ -153,6 +171,7 @@ public final class ReviewSessionStore: ObservableObject {
         let generation = loadGeneration
         loadTask?.cancel()
 
+        selectedFilePaths = []
         // A new review invalidates everything derived from the previous one:
         // rendered lines, navigation indexes, and per-file lookups. The old
         // cache contents would only pin memory for lines that can never be
@@ -213,6 +232,7 @@ public final class ReviewSessionStore: ObservableObject {
     /// Applies a sidebar selection, retaining it if the file still exists.
     public func select(filePath: String?) {
         let previousPath = selection.filePath
+        selectedFilePaths = []
         if let path = filePath, let review,
            review.fileIndexByPath[path] != nil {
             selection.filePath = path
@@ -237,13 +257,27 @@ public final class ReviewSessionStore: ObservableObject {
 
     public var filteredSidebarItems: [FileSidebarItem] {
         guard let review else { return [] }
-        let query = sidebarSearch.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !query.isEmpty else { return review.sidebarItems }
-        return review.sidebarItems.filter { item in
+        let query = sidebarSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+        let letters = Set(statusFilter.map(\.letter))
+        let items = review.sidebarItems.filter { item in
+            !(hideViewedFiles && item.isViewed) && (letters.isEmpty || letters.contains(item.statusLetter))
+        }
+        guard !query.isEmpty else { return items }
+        if sidebarSearchMode.isRegex {
+            guard let matches = regexFilterMatches(query) else { return [] }
+            return items.filter { matches.contains($0.path) }
+        }
+        let lowered = query.lowercased()
+        return items.filter { item in
             // Precomputed lowercase search text (path + status letter) avoids
             // re-lowercasing every path on every keystroke.
-            item.searchable.contains(query)
+            item.searchable.contains(lowered)
         }
+    }
+
+    /// Whether the text filter or the status filter narrows the sidebar.
+    public var isSidebarFiltered: Bool {
+        !sidebarSearch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !statusFilter.isEmpty
     }
 
     /// Resets per-review derived caches (rendered lines + navigation indexes).
@@ -252,5 +286,8 @@ public final class ReviewSessionStore: ObservableObject {
         commentableCache.removeAll()
         hunkIDsCache.removeAll()
         linePositionCache.removeAll()
+        changeSignatureCache = nil
+        sameChangePaths = [:]
+        regexFilterCache = nil
     }
 }

@@ -172,6 +172,160 @@ final class ReviewCommandTests: XCTestCase {
     // MARK: - Helpers
 
     @MainActor
+    func testBulkViewedMarksOnlyWhatChanges() {
+        let store = makeLoadedStore()
+        store.toggleViewed(filePath: "Src.swift")
+
+        XCTAssertEqual(store.setViewed(.fileExtension("swift"), viewed: true), 0)
+        XCTAssertEqual(store.banner?.text, "Already viewed.")
+
+        XCTAssertEqual(store.setViewed(.all, viewed: false), 1)
+        XCTAssertEqual(store.review?.viewed, [])
+        XCTAssertEqual(store.banner?.text, "Marked 1 file unviewed.")
+    }
+
+    @MainActor
+    func testToggleViewedActsOnTheWholeSidebarSelection() {
+        let store = makeLoadedStore(diff: twoMarkdownFilesDiff)
+        store.toggleViewed(filePath: "README.md")
+        store.selectedFilePaths = ["README.md", "NOTES.md"]
+
+        store.toggleViewedForSelection()
+        XCTAssertEqual(store.review?.viewed, ["README.md", "NOTES.md"], "a mixed selection is marked viewed")
+
+        store.toggleViewedForSelection()
+        XCTAssertEqual(store.review?.viewed, [], "a fully viewed selection is unmarked")
+    }
+
+    @MainActor
+    func testSingleSelectionClearsTheMultiSelection() {
+        let store = makeLoadedStore(diff: twoMarkdownFilesDiff)
+        store.selectedFilePaths = ["README.md", "NOTES.md"]
+
+        store.select(filePath: "README.md")
+        store.toggleViewedForSelection()
+
+        XCTAssertEqual(store.selectedFilePaths, [])
+        XCTAssertEqual(store.review?.viewed, ["README.md"])
+    }
+
+    @MainActor
+    func testRegexFilterMatchesPathsOrChangedLines() {
+        let store = makeLoadedStore(diff: importRewriteDiff)
+
+        store.sidebarSearchMode = .pathRegex
+        store.sidebarSearch = #"^src/.*\.js$"#
+        XCTAssertEqual(store.filteredSidebarItems.map(\.path), ["src/a.js", "src/b.js"])
+
+        store.sidebarSearchMode = .changedLines
+        store.sidebarSearch = "extra\\("
+        XCTAssertEqual(store.filteredSidebarItems.map(\.path), ["src/c.ts"])
+
+        store.sidebarSearch = "context only"
+        XCTAssertEqual(store.filteredSidebarItems, [], "context lines are not searched")
+    }
+
+    @MainActor
+    func testInvalidRegexShowsNothingAndSaysSo() {
+        let store = makeLoadedStore(diff: importRewriteDiff)
+
+        store.sidebarSearchMode = .changedLines
+        store.sidebarSearch = "import ("
+
+        XCTAssertTrue(store.sidebarSearchIsInvalid)
+        XCTAssertEqual(store.filteredSidebarItems, [])
+        store.sidebarSearchMode = .paths
+        XCTAssertFalse(store.sidebarSearchIsInvalid)
+    }
+
+    @MainActor
+    func testFilesWithTheSameOrASimilarChangeAreMarkedTogether() {
+        let store = makeLoadedStore(diff: importRewriteDiff)
+
+        XCTAssertEqual(store.filesWithSameChange(as: "src/a.js"), ["src/a.js", "src/b.js"])
+        store.markSimilarChangeViewed(to: "src/a.js")
+        XCTAssertEqual(store.review?.viewed, ["src/a.js", "src/b.js", "src/c.ts"])
+
+        store.markSimilarChangeViewed(to: "README.md")
+        XCTAssertEqual(store.banner?.text, "No other file has a similar change.")
+    }
+
+    private var importRewriteDiff: String {
+        """
+        diff --git a/src/a.js b/src/a.js
+        --- a/src/a.js
+        +++ b/src/a.js
+        @@ -1,2 +1,2 @@
+         context only
+        -import x from 'old'
+        +import x from 'new'
+        diff --git a/src/b.js b/src/b.js
+        --- a/src/b.js
+        +++ b/src/b.js
+        @@ -1,1 +1,1 @@
+        -import x from 'old'
+        +import x from 'new'
+        diff --git a/src/c.ts b/src/c.ts
+        --- a/src/c.ts
+        +++ b/src/c.ts
+        @@ -1,1 +1,2 @@
+        -import x from 'old'
+        +import x from 'new'
+        +extra()
+        diff --git a/README.md b/README.md
+        --- a/README.md
+        +++ b/README.md
+        @@ -1,1 +1,2 @@
+         # Title
+        +New line
+        """
+    }
+
+    @MainActor
+    func testStatusFilterNarrowsTheSidebarSoBulkViewedTakesOnlyThose() {
+        let store = makeLoadedStore(diff: sampleDiff + """
+
+        diff --git a/New.swift b/New.swift
+        new file mode 100644
+        --- /dev/null
+        +++ b/New.swift
+        @@ -0,0 +1 @@
+        +added
+        diff --git a/Old.swift b/Old.swift
+        deleted file mode 100644
+        --- a/Old.swift
+        +++ /dev/null
+        @@ -1 +0,0 @@
+        -removed
+        """)
+        XCTAssertFalse(store.isSidebarFiltered)
+
+        store.statusFilter = [.added, .deleted]
+
+        XCTAssertTrue(store.isSidebarFiltered)
+        XCTAssertEqual(Set(store.filteredSidebarItems.map(\.path)), ["New.swift", "Old.swift"])
+        store.setViewed(.paths(store.filteredSidebarItems.map(\.path)), viewed: true)
+        XCTAssertEqual(store.review?.viewed, ["New.swift", "Old.swift"])
+    }
+
+    private var twoMarkdownFilesDiff: String {
+        """
+        diff --git a/README.md b/README.md
+        --- a/README.md
+        +++ b/README.md
+        @@ -1,1 +1,2 @@
+         # Title
+        +New line
+        diff --git a/NOTES.md b/NOTES.md
+        --- a/NOTES.md
+        +++ b/NOTES.md
+        @@ -1,1 +1,2 @@
+         # Notes
+        +Another line
+        """
+    }
+
+    @MainActor
     private func makeLoadedStore(diff: String? = nil) -> ReviewSessionStore {
         let service = FakeService()
         service.bundle = FetchBundle(

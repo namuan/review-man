@@ -42,24 +42,14 @@ public struct FileSidebarView: View {
             Divider()
 
             List(selection: Binding(
-            get: { showCanvas ? Self.canvasSelection : store.selection.filePath },
+            get: { sidebarSelection },
             set: { selection in
                 // `List` can invoke its selection binding while reconciling
                 // its own view update. Publishing state synchronously here
                 // causes SwiftUI's "Publishing changes from within view
                 // updates" loop, especially when switching Canvas → file.
                 // Defer the mutation one main-loop turn instead.
-                DispatchQueue.main.async {
-                    if selection == Self.canvasSelection {
-                        guard !showCanvas else { return }
-                        AppLog.info("selection", "Sidebar selected change canvas")
-                        showCanvas = true
-                    } else if let selection {
-                        AppLog.info("selection", "Sidebar selected file path=\(selection)")
-                        showCanvas = false
-                        store.select(filePath: selection)
-                    }
-                }
+                DispatchQueue.main.async { applySidebarSelection(selection) }
             }
         )) {
             Section("Review") {
@@ -82,7 +72,15 @@ public struct FileSidebarView: View {
             }
 
             Section("Files") {
-                if fileTree.isEmpty {
+                if fileTree.isEmpty, store.hideViewedFiles, !store.isSidebarFiltered {
+                    Label("Every file is viewed", systemImage: "checkmark.circle")
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("sidebar-all-viewed")
+                } else if fileTree.isEmpty, store.sidebarSearchIsInvalid {
+                    Label("Not a valid regular expression", systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("sidebar-invalid-regex")
+                } else if fileTree.isEmpty {
                     Label("No matching files", systemImage: "magnifyingglass")
                         .foregroundStyle(.secondary)
                         .accessibilityIdentifier("sidebar-no-file-matches")
@@ -130,13 +128,52 @@ public struct FileSidebarView: View {
         .accessibilityIdentifier("file-sidebar")
     }
 
+    /// Shift- and Command-click build a multi-selection that viewed marks act
+    /// on; a single row focuses that file (or the canvas) as before.
+    private var sidebarSelection: Set<String> {
+        if store.selectedFilePaths.count > 1 { return store.selectedFilePaths }
+        if showCanvas { return [Self.canvasSelection] }
+        return store.selection.filePath.map { [$0] } ?? []
+    }
+
+    private func applySidebarSelection(_ selection: Set<String>) {
+        let files = selection.subtracting([Self.canvasSelection])
+        if files.count > 1 {
+            AppLog.info("selection", "Sidebar selected files count=\(files.count)")
+            store.selectedFilePaths = files
+        } else if let path = files.first {
+            AppLog.info("selection", "Sidebar selected file path=\(path)")
+            showCanvas = false
+            store.select(filePath: path)
+        } else if selection.contains(Self.canvasSelection) {
+            store.selectedFilePaths = []
+            guard !showCanvas else { return }
+            AppLog.info("selection", "Sidebar selected change canvas")
+            showCanvas = true
+        }
+    }
+
     private var fileFilter: some View {
         HStack(spacing: 7) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
+            Menu {
+                Picker("Match", selection: $store.sidebarSearchMode) {
+                    ForEach(SidebarSearchMode.allCases) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.inline)
+            } label: {
+                Image(systemName: store.sidebarSearchMode.isRegex ? "text.magnifyingglass" : "magnifyingglass")
+                    .foregroundStyle(store.sidebarSearchMode.isRegex ? Color.accentColor : .secondary)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Match paths, or a regex on paths or changed lines")
+            .accessibilityLabel("Filter by \(store.sidebarSearchMode.title)")
+            .accessibilityIdentifier("sidebar-filter-mode")
 
-            TextField("Filter files", text: $store.sidebarSearch)
+            TextField(store.sidebarSearchMode.placeholder, text: $store.sidebarSearch)
                 .textFieldStyle(.plain)
+                .foregroundStyle(store.sidebarSearchIsInvalid ? Color.red : Color.primary)
                 .focused($focusedControl, equals: .filter)
                 .onSubmit { focusHighlightedFileList() }
                 .accessibilityIdentifier("sidebar-file-filter")
@@ -151,10 +188,44 @@ public struct FileSidebarView: View {
                 .buttonStyle(.borderless)
                 .accessibilityLabel("Clear file filter")
             }
+
+            Button {
+                store.hideViewedFiles.toggle()
+            } label: {
+                Image(systemName: store.hideViewedFiles ? "eye.slash" : "eye")
+                    .foregroundStyle(store.hideViewedFiles ? Color.accentColor : .secondary)
+            }
+            .buttonStyle(.borderless)
+            .help(store.hideViewedFiles ? "Show viewed files" : "Hide viewed files")
+            .accessibilityLabel(store.hideViewedFiles ? "Show viewed files" : "Hide viewed files")
+            .accessibilityIdentifier("sidebar-hide-viewed")
+
+            collapseAllButton
+
+            StatusFilterMenu(store: store)
+
+            BulkViewedMenu(store: store)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
+    }
+
+    /// Collapses every folder, or expands them all once everything is folded.
+    private var collapseAllButton: some View {
+        let all = FileSidebarTreeNode.folderIDs(from: store.review?.sidebarItems ?? [])
+        let allCollapsed = !all.isEmpty && all.isSubset(of: collapsedFolderPaths)
+        return Button {
+            collapsedFolderPaths = allCollapsed ? [] : all
+        } label: {
+            Image(systemName: allCollapsed ? "rectangle.expand.vertical" : "rectangle.compress.vertical")
+                .foregroundStyle(.secondary)
+        }
+        .buttonStyle(.borderless)
+        .disabled(all.isEmpty)
+        .help(allCollapsed ? "Expand all folders" : "Collapse all folders")
+        .accessibilityLabel(allCollapsed ? "Expand all folders" : "Collapse all folders")
+        .accessibilityIdentifier("sidebar-collapse-all")
     }
 
     private func focusFileFilter() {
@@ -210,7 +281,32 @@ private struct SidebarFileTreeRow: View {
                     )
                 }
             } label: {
+                // On the label, not the group: a group's menu also covers its
+                // nested rows, so a subfolder would get its parent's menu.
                 folderLabel
+                    .contextMenu {
+                        let scope = BulkViewedScope.folder(node.path)
+                        let unviewed = store.viewedChangeCount(scope, viewed: true)
+                        if unviewed > 0 {
+                            Button("Mark \(node.name) Viewed (\(unviewed))" as String) { store.setViewed(scope, viewed: true) }
+                        }
+                        if unviewed < node.fileCount {
+                            Button("Mark \(node.name) Unviewed" as String) { store.setViewed(scope, viewed: false) }
+                        }
+                        Divider()
+                        Button(folderExpansion.wrappedValue ? "Collapse \(node.name)" : "Expand \(node.name)" as String) {
+                            folderExpansion.wrappedValue.toggle()
+                        }
+                        let siblings = FileSidebarTreeNode.siblingFolderIDs(of: node.path, in: store.filteredSidebarItems)
+                        if siblings.count > 1 {
+                            Button("Collapse \(node.name) and Sibling Folders" as String) { collapsedFolderPaths.formUnion(siblings) }
+                            Button("Expand \(node.name) and Sibling Folders" as String) { collapsedFolderPaths.subtract(siblings) }
+                        }
+                        Button("Collapse All Folders" as String) {
+                            collapsedFolderPaths = FileSidebarTreeNode.folderIDs(from: store.review?.sidebarItems ?? [])
+                        }
+                        Button("Expand All Folders" as String) { collapsedFolderPaths.removeAll() }
+                    }
             }
             .accessibilityIdentifier("sidebar-folder-\(node.path)")
             .accessibilityLabel("\(node.name), folder, \(node.fileCount) \(node.fileCount == 1 ? "file" : "files")")
@@ -312,8 +408,40 @@ private struct SidebarFileItemRow: View {
         }
         .padding(.vertical, 1)
         .contextMenu {
+            if store.selectedFilePaths.count > 1, store.selectedFilePaths.contains(item.path) {
+                let scope = BulkViewedScope.paths(Array(store.selectedFilePaths))
+                let unviewed = store.viewedChangeCount(scope, viewed: true)
+                if unviewed > 0 {
+                    Button("Mark \(unviewed) Selected Files Viewed" as String) { store.setViewed(scope, viewed: true) }
+                }
+                if unviewed < store.selectedFilePaths.count {
+                    Button("Mark Selected Files Unviewed" as String) { store.setViewed(scope, viewed: false) }
+                }
+                Divider()
+            }
             Button(item.isViewed ? "Mark Unviewed" : "Mark Viewed") {
                 store.toggleViewed(filePath: item.path)
+            }
+            if let ext = BulkViewedScope.fileExtension(of: item.path) {
+                let scope = BulkViewedScope.fileExtension(ext)
+                let count = store.viewedChangeCount(scope, viewed: true)
+                if count > 0 {
+                    Button("Mark All .\(ext) Files Viewed (\(count))" as String) {
+                        store.setViewed(scope, viewed: true)
+                    }
+                }
+            }
+            let sameChange = store.filesWithSameChange(as: item.path)
+            if !sameChange.isEmpty {
+                let unviewed = store.viewedChangeCount(.paths(sameChange), viewed: true)
+                if sameChange.count > 1, unviewed > 0 {
+                    Button("Mark \(unviewed) Files With the Same Change Viewed" as String) {
+                        store.setViewed(.paths(sameChange), viewed: true)
+                    }
+                }
+                Button("Mark Files With a Similar Change Viewed" as String) {
+                    store.markSimilarChangeViewed(to: item.path)
+                }
             }
         }
         .accessibilityElement(children: .combine)
@@ -356,6 +484,14 @@ struct FileSidebarTreeNode: Identifiable, Equatable {
     /// IDs for every folder in the complete (unfiltered) sidebar tree. The
     /// menu command uses these to make Collapse All deterministic even while
     /// a search result is narrowing the visible branches.
+    /// The folders sharing `folderPath`'s parent, the folder itself included.
+    static func siblingFolderIDs(of folderPath: String, in items: [FileSidebarItem]) -> Set<String> {
+        let parent = folderPath.split(separator: "/").dropLast()
+        return folderIDs(from: items).filter { id in
+            id.dropFirst("folder:".count).split(separator: "/").dropLast() == parent
+        }
+    }
+
     static func folderIDs(from items: [FileSidebarItem]) -> Set<String> {
         var identifiers: Set<String> = []
         func collect(_ nodes: [FileSidebarTreeNode]) {
@@ -415,5 +551,77 @@ struct FileSidebarTreeNode: Identifiable, Equatable {
 
     private static func pathComponents(_ path: String) -> [String] {
         path.split(separator: "/").map(String.init)
+    }
+}
+
+/// Entries that would change nothing are hidden.
+private struct BulkViewedMenu: View {
+    @ObservedObject var store: ReviewSessionStore
+
+    var body: some View {
+        Menu {
+            let filtered = store.isSidebarFiltered ? BulkViewedScope.paths(store.filteredSidebarItems.map(\.path)) : nil
+            if let filtered {
+                entry("Files Matching Filter", filtered)
+            }
+            entry("All Files", .all)
+            entry("Deleted Files", .deleted)
+            entry("Renamed Without Changes", .pureRenames)
+            Divider()
+            if let filtered, store.viewedChangeCount(filtered, viewed: false) > 0 {
+                Button("Unmark Files Matching Filter" as String) { store.setViewed(filtered, viewed: false) }
+            }
+            Button("Unmark All" as String) { store.setViewed(.all, viewed: false) }
+                .disabled(store.viewedChangeCount(.all, viewed: false) == 0)
+        } label: {
+            Image(systemName: "checkmark.circle")
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Mark files viewed in bulk")
+        .accessibilityIdentifier("sidebar-bulk-viewed")
+    }
+
+    @ViewBuilder
+    private func entry(_ title: String, _ scope: BulkViewedScope) -> some View {
+        let count = store.viewedChangeCount(scope, viewed: true)
+        if count > 0 {
+            Button("Mark \(title) Viewed (\(count))" as String) { store.setViewed(scope, viewed: true) }
+        }
+    }
+}
+
+/// Narrows the sidebar to added, modified, deleted or renamed files; with
+/// the bulk viewed menu, that marks e.g. every deleted file in two clicks.
+private struct StatusFilterMenu: View {
+    @ObservedObject var store: ReviewSessionStore
+
+    var body: some View {
+        Menu {
+            ForEach(FileStatus.allCases, id: \.self) { status in
+                let count = store.review?.sidebarItems.filter { $0.statusLetter == status.letter }.count ?? 0
+                Toggle("\(status.rawValue.capitalized) (\(count))" as String, isOn: Binding(
+                    get: { store.statusFilter.contains(status) },
+                    set: { on in
+                        if on { store.statusFilter.insert(status) } else { store.statusFilter.remove(status) }
+                    }
+                ))
+                .disabled(count == 0 && !store.statusFilter.contains(status))
+            }
+            Divider()
+            Button("Show All Statuses" as String) { store.statusFilter = [] }
+                .disabled(store.statusFilter.isEmpty)
+        } label: {
+            Image(systemName: store.statusFilter.isEmpty
+                  ? "line.3.horizontal.decrease.circle"
+                  : "line.3.horizontal.decrease.circle.fill")
+                .foregroundStyle(store.statusFilter.isEmpty ? Color.secondary : Color.accentColor)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Show only added, modified, deleted or renamed files")
+        .accessibilityIdentifier("sidebar-status-filter")
     }
 }
